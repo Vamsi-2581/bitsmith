@@ -269,23 +269,6 @@ size.
 """,
         milestone="v0.3: Speed",
     ),
-    Issue(
-        "Reduce Python overhead in the GPTQ column loop",
-        ["enhancement", "performance", "area: calibration"],
-        """\
-`gptq_quantize` loops over columns in Python. On a GPU this makes GPTQ CPU bound: during
-the Qwen2.5 runs the GPU sat mostly idle while one CPU core ran at 100%.
-
-**Ideas**: process each lazy-update block with `torch.compile`, or write the inner block
-loop as a Triton kernel; the update between blocks is already a single matmul.
-
-**Files**: `src/bitsmith/calib/gptq.py`, `tests/unit/test_calib.py` (results must not change
-beyond float rounding)
-
-**Done when** GPTQ on Qwen2.5-0.5B is at least 3x faster with the same perplexity.
-""",
-        milestone="v0.3: Speed",
-    ),
     # ---------------------------------------------------------------- v0.4 formats
     Issue(
         "Fused Triton kernel for NF4 and MXFP4",

@@ -29,7 +29,7 @@ Goal: make quantized models faster than bf16 end to end, not just per layer.
 | Faster INT4 GEMV: wide vector loads and weight pre-shuffling | `performance`, `area: kernels` |
 | Real INT8 W8A8 matmul on tensor cores with `torch._int_mm` | `performance`, `area: kernels`, `help wanted` |
 | Tune the INT4 prefill GEMM (currently about 2x slower than cuBLAS) | `performance`, `area: kernels` |
-| Vectorize the GPTQ column loop | `performance`, `area: calibration` |
+| ~~Faster GPTQ column loop~~ done, 3.5x to 15x per layer, see ADR 0013 | `performance`, `area: calibration` |
 
 ## v0.4: Formats
 

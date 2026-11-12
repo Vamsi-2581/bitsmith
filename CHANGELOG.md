@@ -19,6 +19,8 @@ uses Semantic Versioning.
   fixed scales), so GPTQ rounds each column onto the real grid (ADR 0012).
 - `QLinear.from_buffers` and a `quantize_model(encoded=...)` argument for ready codec
   buffers.
+- `scripts/bench_gptq.py`: per-layer GPTQ timing for the Qwen2.5-1.5B shapes, with results
+  for an RTX 3090 in `results/gptq_speed_rtx3090.*`.
 - Technical guide sections on NF4, MX and GPTQ on grid formats; tests with known values.
 - Apache 2.0 license, Code of Conduct, security policy, citation file and roadmap.
 - Contributor guide with a first-contribution walkthrough and label reference.
@@ -30,6 +32,12 @@ uses Semantic Versioning.
 
 ### Changed
 
+- GPTQ is 3.5x to 15x faster per layer on a GPU (ADR 0013): one transposed loop with
+  two-level lazy updates shared by INT4 and grid formats, CUDA graph replay of each
+  32-column block, and a cheaper inverse Hessian factor computed in float32 on CUDA with
+  a float64 fallback. Results are unchanged beyond float rounding. New arguments:
+  `use_cuda_graph` and `inner_size` on both GPTQ functions, `dtype` on
+  `damped_inverse_cholesky`.
 - `fp8_encode` shares its nearest-even table search (`round_to_table`) with FP4.
 - Sweeps keep the reference weights on the CPU, which saves one model's worth of GPU
   memory, and release cached GPU memory between configs.

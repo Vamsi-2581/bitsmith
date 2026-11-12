@@ -234,6 +234,14 @@ and runs the same update. The result is exactly what the codec stores (a test de
 buffers and compares bit for bit). On the correlated test inputs, GPTQ lowers the expected
 output error about 4x for NF4, MXFP4 and MXINT8, the same as for INT4 (3.8x).
 
+**Making the loop fast** (ADR 0013). The weight is stored transposed, so each input column
+is a contiguous row. Updates are lazy on two levels: rank-1 updates stay inside a
+32-column inner block, and one matmul pushes the block's errors to the columns after it.
+On CUDA each inner block is captured once as a CUDA graph and replayed, turning about 300
+kernel launches into one. The inverse Hessian factor uses `U = P L^-1 P` with
+`P H P = L L^T` (`P` reverses the order), one Cholesky and one triangular inverse, in
+float32 on CUDA with a float64 fallback. `scripts/bench_gptq.py` times each part.
+
 ## 7. Evaluation
 
 `src/bitsmith/eval/`
