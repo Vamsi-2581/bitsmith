@@ -133,6 +133,29 @@ def test_damped_cholesky_is_upper_and_inverts() -> None:
     torch.testing.assert_close(u.T @ u, torch.linalg.inv(h), rtol=1e-3, atol=1e-4)
 
 
+def test_reversed_factorization_equals_textbook_cholesky_of_inverse() -> None:
+    a = torch.randn(40, 40, dtype=torch.float64)
+    h = a @ a.T + torch.eye(40, dtype=torch.float64)
+    u, _ = damped_inverse_cholesky(h, damp=0.0, dtype=torch.float64)
+    textbook = torch.linalg.cholesky(torch.linalg.inv(h), upper=True)
+    torch.testing.assert_close(u, textbook.float(), rtol=1e-5, atol=1e-6)
+
+
+def test_float32_factorization_close_and_falls_back_to_float64() -> None:
+    a = torch.randn(32, 32)
+    h = a @ a.T + torch.eye(32)
+    u64, _ = damped_inverse_cholesky(h, dtype=torch.float64)
+    u32, _ = damped_inverse_cholesky(h, dtype=torch.float32)
+    torch.testing.assert_close(u32, u64, rtol=1e-3, atol=1e-4)
+    # positive definite in float64, singular once rounded to float32
+    nearly = torch.tensor([[1.0, 1 - 1e-9], [1 - 1e-9, 1.0]], dtype=torch.float64)
+    u, _ = damped_inverse_cholesky(nearly, damp=0.0, dtype=torch.float32)
+    assert torch.isfinite(u).all()
+    torch.testing.assert_close(u.double().T @ u.double(), torch.linalg.inv(nearly), rtol=1e-3, atol=0)
+    with pytest.raises(torch.linalg.LinAlgError, match="not positive definite"):
+        damped_inverse_cholesky(torch.tensor([[1.0, 2.0], [2.0, 1.0]]), damp=0.0)
+
+
 # Capture and pipeline ------------------------------------------------------------------
 
 

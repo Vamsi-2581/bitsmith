@@ -72,7 +72,7 @@ def round_to_table(a: Tensor, mags: Tensor) -> Tensor:
     saturate to it, and ties go to the even code, which is IEEE round to nearest even.
     """
     last = mags.numel() - 1
-    a = a.clamp(max=float(mags[-1]))
+    a = torch.minimum(a, mags[-1])  # a tensor bound: no host sync, so CUDA graphs can capture it
     hi = torch.searchsorted(mags, a.contiguous()).clamp(max=last)
     lo = (hi - 1).clamp(min=0)
     d_lo = a - mags[lo]

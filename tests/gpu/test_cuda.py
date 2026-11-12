@@ -46,6 +46,23 @@ def test_table_gptq_on_gpu_matches_cpu(scheme: str) -> None:
     assert sqnr_db(cpu, gpu.cpu()) > 40
 
 
+@pytest.mark.parametrize("case", ["int4", "int4-act-order", "nf4", "mxfp4"])
+def test_gptq_cuda_graph_matches_eager(case: str) -> None:
+    x = torch.randn(1024, 200, device=CUDA)  # 200 columns: the last inner block is partial
+    h = 2 * x.T @ x / 1024
+    w = torch.randn(48, 200, device=CUDA) * 0.02
+    if case.startswith("int4"):
+        act = case.endswith("order")
+        a = gptq_quantize(w, h, group_size=32, act_order=act, use_cuda_graph=True).qtensor
+        b = gptq_quantize(w, h, group_size=32, act_order=act, use_cuda_graph=False).qtensor
+        assert torch.equal(a.codes, b.codes) and torch.equal(a.scale, b.scale)
+    else:
+        codec = make_codec(case, 32)
+        ga = gptq_quantize_table(w, h, codec, use_cuda_graph=True)  # type: ignore[arg-type]
+        gb = gptq_quantize_table(w, h, codec, use_cuda_graph=False)  # type: ignore[arg-type]
+        assert torch.equal(ga.weight, gb.weight)
+
+
 def test_calibration_pipeline_on_gpu() -> None:
     torch.manual_seed(0)
     model = TinyLM(TinyLMConfig(vocab_size=32, dim=64, n_layers=2, n_heads=2, max_len=32)).to(CUDA).eval()
