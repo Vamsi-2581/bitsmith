@@ -44,7 +44,9 @@ operations on one column. Profiling the v0.2.0 loop showed three costs:
   graphs is 2x to 10x faster than eager, and a whole layer is about 3.5x to 15x faster
   than the v0.2.0 implementation, depending on shape and load.
 - Results are unchanged beyond float rounding: against v0.2.0, 99.7% to 99.99% of codes
-  are identical and the expected output error matches to 0.01%.
+  are identical and the expected output error matches to 0.01%. End to end, INT4 GPTQ on
+  Qwen2.5-0.5B gives WikiText-2 perplexity 13.13 against 13.12 before
+  (`results/gptq_recheck_qwen2.5_0.5b.txt`), and the whole run (calibration, both evaluations and decode timing) took 4.5 minutes.
 - CPU results stay on the float64 path, so CPU tests and committed CPU results do not
   move. GPU runs may differ from v0.2.0 in a small fraction of codes.
 - The graph path depends on every operation in the round function being capturable (no

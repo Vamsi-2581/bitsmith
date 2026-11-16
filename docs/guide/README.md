@@ -14,6 +14,8 @@ through the library. Each section names the file that implements it.
 7. [Evaluation](#7-evaluation)
 8. [Roofline](#8-roofline)
 9. [Fused INT4 kernel](#9-fused-int4-kernel)
+10. [KV-cache quantization](#10-kv-cache-quantization)
+11. [CUDA graph decoding](#11-cuda-graph-decoding)
 
 ---
 
@@ -137,6 +139,22 @@ signed: v = (n ^ 8) - 8       maps 0..7 -> 0..7 and 8..15 -> -8..-1
 
 Example: `[1, 2, -1, 7]` packs to `0x21 0x7F`.
 
+**INT3**: eight unsigned codes in three bytes. The codes form one little-endian 24-bit
+word, three bits each, stored low byte first (ADR 0014):
+
+```
+word   = v0 | v1 << 3 | v2 << 6 | ... | v7 << 21
+byte_k = (word >> 8k) & 0xFF                      k = 0, 1, 2
+v_i    = (word >> 3i) & 0b111
+```
+
+Example: `[1, 2, 3, 4, 5, 6, 7, 0]` gives `word = 0x1F58D1` and bytes `0xD1 0x58 0x1F`.
+`v2` straddles the first two bytes, which is why the word is rebuilt before shifting.
+
+**INT2**: four unsigned codes per byte at bit offsets 0, 2, 4, 6, the ternary layout below.
+`[1, 2, 3, 0]` packs to `0x39`. INT3 and INT2 are asymmetric only, so all 8 or 4 levels
+are used.
+
 **Ternary, 2-bit**: store `t + 1` in two bits, four per byte at bit offsets 0, 2, 4, 6.
 `[1, -1, 0, 1]` packs to `0b10_01_00_10`.
 
@@ -176,6 +194,21 @@ y  = x @ W^T + bias
 
 `quantize_model` walks `named_modules()`, swaps each `nn.Linear` for a `QLinear`, skips
 names matching `exclude` (default `lm_head`), and returns a report with exact byte counts.
+
+GPT-2 and a few other models use `transformers`' `Conv1D` instead of `nn.Linear`: the same
+`y = x W + b`, with `W` stored as `(in, out)`. `linearize_conv1d` replaces each one with an
+`nn.Linear` holding `W^T`; `quantize_model` and `calibrate_and_quantize` call it first, so
+codecs, calibration hooks, AWQ and GPTQ only ever see `nn.Linear`. The swap is exact (a
+test compares outputs), and `Conv1D` is recognised by name and shape, so bitsmith does
+not import transformers for it.
+
+**Backends.** `set_backend(model, name)` switches every layer that supports it:
+
+| Backend | Layers | What runs |
+|---------|--------|-----------|
+| `reference` | all | dequantize, then `F.linear` (the source of truth, ADR 0004) |
+| `triton` | INT4 weights | fused dequantize and matmul (section 9) |
+| `int8` | INT8 weights with `act_bits=8` | integer W8A8 matmul (section 9) |
 
 ## 6. Calibration
 
@@ -296,3 +329,99 @@ cuBLAS and 5x to 24x faster than the reference path (see the README). It reaches
 peak bandwidth; closing the rest of the gap needs techniques beyond this project's scope
 (weight pre-shuffling for wide vector loads, asynchronous copies, and tuned tile shapes,
 as in Marlin).
+
+### Real INT8 W8A8
+
+`src/bitsmith/kernels/int8_mm.py`
+
+The reference runtime only simulates W8A8: activations are rounded to INT8 codes and then
+multiplied as floats. The `int8` backend multiplies integers:
+
+```
+s_x = max|x[t]| / 127 per token     xq = clamp(round(x / s_x), -127, 127)   (int8)
+acc = xq @ wq^T                      int8 x int8 -> int32 on tensor cores (torch._int_mm)
+y   = acc * s_x * s_w^T + bias       s_w per output channel
+```
+
+The activation codes are computed by the same function as the simulated path, so both
+backends agree to float rounding (tested). `torch._int_mm` needs more than 16 rows and
+inner dimensions divisible by 8; shorter inputs are padded with zero rows.
+
+## 10. KV-cache quantization
+
+`src/bitsmith/kv/quant.py`, `src/bitsmith/kv/hf.py`
+
+During decoding every layer keeps the keys and values of all earlier tokens. Per token
+that is `2 x layers x kv_heads x head_dim` numbers, so the cache grows with context length
+and batch size while the weights stay fixed. bitsmith stores it with an asymmetric grid
+per group, an fp16 scale `s` and an fp16 minimum `m`:
+
+```
+s = (max - min) / (2^b - 1)     q = clamp(round((x - m) / s), 0, 2^b - 1)     x' = q s + m
+bits per element = b + 32 / group
+```
+
+Two group shapes, chosen per tensor:
+
+| Axis | One group is | When it is quantized |
+|------|--------------|----------------------|
+| per token | `group` consecutive channels of one token | as soon as the token is written |
+| per channel | one channel over `group` consecutive tokens | once all `group` tokens exist |
+
+Keys need per-channel groups. In trained models a few key channels are large for every
+token, so a per-token grid stretches to fit them and rounds the other channels to a
+handful of levels. Per channel, each channel gets its own range.
+Values have no such channels and are combined across tokens by the attention weights, so
+per token suits them. This is the KIVI layout, `k4cv4` in bitsmith's spec names
+(`k<bits>[c]v<bits>[c][-g<group>]`, `c` = per channel).
+
+A per-channel group cannot be quantized until it is complete, so the newest
+`n mod group` tokens wait in full precision. `KVStream.append` returns the stored tokens
+*before* quantizing a group that has just been completed, which is what token-by-token
+decoding sees.
+
+**Exact evaluation in chunks.** `kv_perplexity` feeds each window through a fresh cache in
+chunks of `group` tokens. Queries in a chunk see earlier groups quantized and their own
+group in full precision, exactly as when decoding one token at a time. A test checks that
+the chunked logits match token-by-token decoding to float rounding. (A single forward pass
+would be wrong both ways: Hugging Face's own quantized cache returns the prompt
+unquantized, and quantizing the whole prompt first would let each query see a group
+quantized with statistics of tokens after it.)
+
+`quantized_cache(spec)` is a regular `transformers` cache, so it also works with
+`model.generate(past_key_values=...)`. The cache holds the packed codes; the attention
+still reads a dequantized copy built at each step, so this measures accuracy and memory,
+not speed. A fused attention kernel that reads the packed cache is on the roadmap.
+
+## 11. CUDA graph decoding
+
+`src/bitsmith/decode.py`
+
+At batch 1 one decode step of a 1.5B model runs a few hundred small kernels: norms,
+projections, rotary embeddings, attention, MLPs, each one or a few launches. The GPU
+finishes most of them faster than the CPU can launch the next one, so the step is bound
+by launch overhead, not by memory bandwidth. This is why a faster INT4 GEMV alone did not
+make `generate` faster than bf16.
+
+`GraphDecoder` records one decode step as a CUDA graph and replays it for every token:
+
+```
+prefill the prompt eagerly into a StaticCache (fixed size, fixed addresses)
+capture:  logits = model(ids_buf, cache_position=pos_buf, past_key_values=cache)
+for each new token:
+    ids_buf <- previous token        # device to device copy, no host sync
+    pos_buf <- position
+    graph.replay()                   # one launch for the whole step
+    token <- argmax(logits)          # stays on the GPU
+```
+
+Requirements, all met by `transformers.StaticCache` and the bitsmith kernels: every
+tensor the step touches keeps its address between replays (the cache is preallocated and
+`reset()` zeroes it in place), nothing in the step synchronizes with the host, and every
+kernel was compiled before capture (two warm-up steps on a side stream, which also runs
+Triton's autotuning). The capture is done once; the warm-up steps write into the cache,
+so the prompt is prefilled again before decoding.
+
+Tests check that graph replay produces the same tokens as eager steps with bf16 weights,
+the reference INT4 runtime and the fused kernel, and that the eager path matches
+`generate` exactly.

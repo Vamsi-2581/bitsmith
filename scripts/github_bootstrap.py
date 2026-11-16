@@ -290,32 +290,40 @@ and `bench_kernels.py` reports them next to INT4.
         milestone="v0.4: Formats",
     ),
     Issue(
-        "Add INT3 and INT2 group codecs with packing",
-        ["enhancement", "area: formats"],
+        "Fused Triton GEMV for INT3 and INT2",
+        ["enhancement", "performance", "area: kernels", "help wanted"],
         """\
-Only 4- and 8-bit integers are packed today. 3-bit and 2-bit weights (used with GPTQ in
-some low-memory setups) need their own packing: for example 8 three-bit values in 3 bytes.
+INT3 and INT2 weights (ADR 0014) run only on the reference path. They read 25% and 50%
+fewer bytes than INT4, so a fused kernel should decode even faster.
 
-**Task**: add `pack_int3`/`unpack_int3` and `pack_int2`/`unpack_int2` in
-`src/bitsmith/packing/`, codecs `int3` and `int2`, and make `gptq_quantize` usable with them.
+**Task**: add GEMV kernels next to `src/bitsmith/kernels/int4_triton.py`. INT3 loads three
+bytes per eight codes, rebuilds the 24-bit word and shifts codes out; INT2 is four codes
+per byte.
 
-**Done when** known-layout and round trip tests pass and `bitsmith sqnr` shows both.
+**Files**: `src/bitsmith/kernels/`, `src/bitsmith/nn/qlinear.py` (`supports_triton`),
+`tests/gpu/test_cuda.py`, `scripts/bench_kernels.py`
+
+**Done when** the GPU tests match the reference path and `bench_kernels.py` shows INT3 and
+INT2 next to INT4 against the bandwidth roofline.
 """,
         milestone="v0.4: Formats",
     ),
     Issue(
-        "KV-cache quantization",
-        ["enhancement", "area: formats", "help wanted"],
-        """\
-For long contexts the KV cache can be larger than the weights. Storing keys and values in
-INT8 or FP8 roughly halves that memory.
+        "Fused attention that reads the packed KV cache",
+        ["enhancement", "performance", "area: kernels", "help wanted"],
+        """`bitsmith.kv` stores the KV cache as packed 2 to 8-bit codes (ADR 0015), but attention
+still reads a dequantized copy rebuilt at every decode step, so the cache saves memory
+without saving time.
 
-**Task**: design and implement KV-cache quantization for Hugging Face models (for example a
-custom `Cache` class that stores quantized keys and values per head with per-token
-scales), and measure perplexity and memory at 4k and 16k context.
+**Task**: a Triton decode attention kernel (one query token) that loads the packed keys
+and values with their fp16 scales and minimums, dequantizes in registers and computes
+softmax(q k^T) v, with per-channel keys and per-token values as in `KVStream`. The
+full-precision residual can go through a second, plain pass.
 
-**Done when** there is a short design note (ADR), an implementation with tests, and
-results for one model.
+**Files**: `src/bitsmith/kv/`, `src/bitsmith/kernels/`, `tests/gpu/test_cuda.py`
+
+**Done when** the kernel matches the reference cache path in a GPU test and a benchmark
+shows decode attention time against the bf16 cache at 4k and 16k tokens.
 """,
         milestone="v0.4: Formats",
     ),

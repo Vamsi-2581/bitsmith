@@ -18,5 +18,10 @@ Records are immutable once accepted; a later record can supersede an earlier one
 | [0011](0011-lookup-and-microscaling-formats.md) | Lookup-table and microscaling formats: NF4, MXFP4, MXINT8 | Accepted |
 | [0012](0012-gptq-on-grid-formats.md) | GPTQ on non-uniform grids through a TableCodec interface | Accepted |
 | [0013](0013-fast-gptq-loop.md) | Fast GPTQ: transposed two-level loop, CUDA graphs, cheaper Hessian factor | Accepted |
+| [0014](0014-int3-int2-packing.md) | INT3 and INT2: asymmetric groups, 24-bit words for INT3 | Accepted |
+| [0015](0015-kv-cache-quantization.md) | KV-cache quantization: per-channel keys, per-token values, exact chunked evaluation | Accepted |
+| [0016](0016-cuda-graph-decoding.md) | Decode with a static cache and a CUDA graph per token | Accepted |
+| [0017](0017-int8-w8a8-backend.md) | Real INT8 W8A8 through torch._int_mm | Accepted |
+| [0018](0018-smoothquant-per-layer-search.md) | SmoothQuant chooses per layer, and may choose not to smooth | Accepted |
 
 New records start from [`template.md`](template.md).
