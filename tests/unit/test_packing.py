@@ -6,11 +6,15 @@ import torch
 from bitsmith.packing import (
     mask_24,
     pack_24,
+    pack_int2,
+    pack_int3,
     pack_int4,
     pack_ternary_2bit,
     pack_ternary_base3,
     prune_24,
     unpack_24,
+    unpack_int2,
+    unpack_int3,
     unpack_int4,
     unpack_ternary_2bit,
     unpack_ternary_base3,
@@ -125,3 +129,48 @@ def test_sparse_rejects_bad_shapes() -> None:
         mask_24(torch.randn(2, 6))
     with pytest.raises(ValueError, match="multiple of 8"):
         pack_24(torch.randn(2, 4))
+
+
+# INT3 and INT2 -----------------------------------------------------------------------
+def test_int3_known_layout() -> None:
+    # word = 1 | 2 << 3 | 3 << 6 | ... | 7 << 18 = 0x1F58D1, stored low byte first
+    packed = pack_int3(torch.tensor([1, 2, 3, 4, 5, 6, 7, 0]))
+    assert packed.tolist() == [0xD1, 0x58, 0x1F]
+    assert pack_int3(torch.full((8,), 7)).tolist() == [0xFF, 0xFF, 0xFF]
+
+
+def test_int2_known_layout() -> None:
+    assert pack_int2(torch.tensor([1, 2, 3, 0, 3, 3, 3, 3])).tolist() == [0x39, 0xFF]
+
+
+@pytest.mark.parametrize(
+    ("bits", "pack", "unpack", "ratio"), [(3, pack_int3, unpack_int3, 3 / 8), (2, pack_int2, unpack_int2, 1 / 4)]
+)
+def test_lowbit_round_trip_and_size(bits: int, pack, unpack, ratio: float) -> None:  # type: ignore[no-untyped-def]
+    codes = torch.randint(0, 1 << bits, (5, 64))
+    packed = pack(codes)
+    assert packed.dtype == torch.uint8 and packed.shape == (5, int(64 * ratio))
+    assert torch.equal(unpack(packed).to(torch.int64), codes)
+
+
+def test_lowbit_rejects_bad_input() -> None:
+    with pytest.raises(ValueError, match="multiple of 8"):
+        pack_int3(torch.zeros(6, dtype=torch.int64))
+    with pytest.raises(ValueError, match=r"\[0, 7\]"):
+        pack_int3(torch.full((8,), 8))
+    with pytest.raises(ValueError, match="multiple of 4"):
+        pack_int2(torch.zeros(6, dtype=torch.int64))
+    with pytest.raises(ValueError, match=r"\[0, 3\]"):
+        pack_int2(torch.full((4,), -1))
+    with pytest.raises(ValueError, match="multiple of 3"):
+        unpack_int3(torch.zeros(4, dtype=torch.uint8))
+
+
+def test_validate_false_skips_range_check_only() -> None:
+    from bitsmith.packing import pack_int2, pack_int3, pack_int4
+
+    codes = torch.tensor([[1, 2, 3, 0, 3, 3, 3, 3]])
+    for pack in (pack_int4, pack_int3, pack_int2):
+        assert torch.equal(pack(codes, validate=False), pack(codes))
+    with pytest.raises(ValueError, match="multiple"):
+        pack_int3(codes[:, :4], validate=False)  # shape checks stay

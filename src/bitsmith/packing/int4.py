@@ -14,12 +14,16 @@ import torch
 from torch import Tensor
 
 
-def pack_int4(codes: Tensor) -> Tensor:
-    """Pack integer codes in ``[-8, 15]`` (last dim even) into a uint8 tensor of half width."""
+def pack_int4(codes: Tensor, *, validate: bool = True) -> Tensor:
+    """Pack integer codes in ``[-8, 15]`` (last dim even) into a uint8 tensor of half width.
+
+    ``validate=False`` skips the range check, which reads the codes back to the host; use it
+    in hot GPU paths whose codes are in range by construction.
+    """
     if codes.shape[-1] % 2:
         raise ValueError(f"last dimension must be even, got {codes.shape[-1]}")
     c = codes.to(torch.int16)
-    if c.numel() and (int(c.min()) < -8 or int(c.max()) > 15):
+    if validate and c.numel() and (int(c.min()) < -8 or int(c.max()) > 15):
         raise ValueError("int4 codes must lie in [-8, 15]")
     nib = (c & 0x0F).to(torch.uint8)
     return nib[..., 0::2] | (nib[..., 1::2] << 4)

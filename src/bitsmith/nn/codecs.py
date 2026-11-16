@@ -19,10 +19,14 @@ from torch import Tensor
 
 from bitsmith.packing import (
     pack_24,
+    pack_int2,
+    pack_int3,
     pack_int4,
     pack_ternary_2bit,
     pack_ternary_base3,
     unpack_24,
+    unpack_int2,
+    unpack_int3,
     unpack_int4,
     unpack_ternary_2bit,
     unpack_ternary_base3,
@@ -83,21 +87,49 @@ class Int8Codec:
         return buffers["qweight"].to(torch.float32) * buffers["scale"].to(torch.float32)
 
 
+# codes per packing unit for each sub-byte width: 2 nibbles, 8 three-bit codes, 4 crumbs
+_PACK_MULTIPLE = {4: 2, 3: 8, 2: 4}
+
+
 @dataclass(frozen=True)
-class Int4Codec:
-    """Group-wise INT4, asymmetric by default, packed two codes per byte."""
+class IntCodec:
+    """Group-wise INT4, INT3 or INT2 with an fp16 scale (and uint8 zero point) per group.
+
+    INT4 may be symmetric or asymmetric and packs two codes per byte. INT3 and INT2 are
+    asymmetric only (a symmetric 2-bit grid would waste a level) and pack eight codes in
+    three bytes or four per byte; see :mod:`bitsmith.packing.lowbit`.
+    """
 
     group_size: int = 128
     symmetric: bool = False
-    name: ClassVar[str] = "int4"
+    bits: int = 4
 
     def __post_init__(self) -> None:
-        if self.group_size < 2 or self.group_size % 2:
-            raise ValueError("int4 group_size must be an even number >= 2")
+        if self.bits not in _PACK_MULTIPLE:
+            raise ValueError("bits must be 4, 3 or 2")
+        if self.symmetric and self.bits != 4:
+            raise ValueError("int3 and int2 are asymmetric only")
+        multiple = _PACK_MULTIPLE[self.bits]
+        if self.group_size < 2 or self.group_size % multiple:
+            raise ValueError(f"int{self.bits} group_size must be a multiple of {multiple} (and >= 2)")
+
+    @property
+    def name(self) -> str:
+        return f"int{self.bits}" + ("-sym" if self.symmetric else "")
 
     @property
     def spec(self) -> QuantSpec:
-        return QuantSpec(bits=4, symmetric=self.symmetric, granularity="group", group_size=self.group_size)
+        return QuantSpec(bits=self.bits, symmetric=self.symmetric, granularity="group", group_size=self.group_size)
+
+    def _pack(self, codes: Tensor) -> Tensor:
+        if self.bits == 4:
+            return pack_int4(codes.to(torch.int16))
+        return pack_int3(codes) if self.bits == 3 else pack_int2(codes)
+
+    def _unpack(self, packed: Tensor) -> Tensor:
+        if self.bits == 4:
+            return unpack_int4(packed, signed=self.symmetric)
+        return unpack_int3(packed) if self.bits == 3 else unpack_int2(packed)
 
     def encode(self, weight: Tensor) -> dict[str, Tensor]:
         groups = _to_groups(weight, self.spec)
@@ -113,7 +145,7 @@ class Int4Codec:
             raise ValueError(f"QTensor spec {qt.spec} does not match codec spec {self.spec}")
         rows = qt.codes.shape[0]
         bufs = {
-            "qweight": pack_int4(qt.codes.reshape(rows, -1).to(torch.int16)),
+            "qweight": self._pack(qt.codes.reshape(rows, -1)),
             "scale": qt.scale.reshape(rows, -1).to(SCALE_DTYPE),
         }
         if not self.symmetric:
@@ -121,7 +153,7 @@ class Int4Codec:
         return bufs
 
     def decode(self, buffers: dict[str, Tensor], out_features: int, in_features: int) -> Tensor:
-        codes = unpack_int4(buffers["qweight"], signed=self.symmetric).to(torch.float32)
+        codes = self._unpack(buffers["qweight"]).to(torch.float32)
         codes = codes.reshape(out_features, -1, self.group_size)
         scale = buffers["scale"].to(torch.float32).unsqueeze(-1)
         if self.symmetric:
@@ -129,6 +161,10 @@ class Int4Codec:
         else:
             w = (codes - buffers["zero"].to(torch.float32).unsqueeze(-1)) * scale
         return w.reshape(out_features, -1)[:, :in_features]
+
+
+# The INT4 codec under its historical name (the fused kernel and older code use it).
+Int4Codec = IntCodec
 
 
 @dataclass(frozen=True)
@@ -318,6 +354,8 @@ SCHEMES = (
     "int8",
     "int4",
     "int4-sym",
+    "int3",
+    "int2",
     "nf4",
     "mxfp4",
     "mxint8",
@@ -336,7 +374,7 @@ TABLE_SCHEMES = ("nf4", "mxfp4", "mxint8")
 def make_codec(scheme: str, group_size: int = 128) -> WeightCodec:
     """Build a codec from a scheme name. See :data:`SCHEMES`.
 
-    ``group_size`` applies to ``int4``, ``int4-sym`` and ``nf4``. MX formats always use
+    ``group_size`` applies to ``int4``, ``int4-sym``, ``int3``, ``int2`` and ``nf4``. MX formats always use
     blocks of 32, as the specification requires.
     """
     if scheme == "int8":
@@ -345,6 +383,8 @@ def make_codec(scheme: str, group_size: int = 128) -> WeightCodec:
         return Int4Codec(group_size=group_size)
     if scheme == "int4-sym":
         return Int4Codec(group_size=group_size, symmetric=True)
+    if scheme in ("int3", "int2"):
+        return IntCodec(group_size=group_size, bits=int(scheme[3]))
     if scheme == "nf4":
         return NF4Codec(group_size=group_size)
     if scheme == "mxfp4":
