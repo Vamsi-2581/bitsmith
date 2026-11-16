@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import matplotlib
+import matplotlib.ticker
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -111,9 +112,18 @@ def terminal_shot(text_file: Path, out_name: str, title: str, max_lines: int = 6
 
 
 GPU_MODELS = [
-    ("gpu_smollm2_135m.json", "SmolLM2-135M"),
-    ("gpu_qwen2.5_0.5b.json", "Qwen2.5-0.5B"),
-    ("gpu_qwen2.5_1.5b.json", "Qwen2.5-1.5B"),
+    ("smollm2_135m", "SmolLM2-135M"),
+    ("qwen2.5_0.5b", "Qwen2.5-0.5B"),
+    ("qwen2.5_1.5b", "Qwen2.5-1.5B"),
+]
+# each model has a main sweep plus sweeps for the formats added later; all share one baseline
+GPU_FILES = [
+    "gpu_{}.json",
+    "gpu_formats_{}.json",
+    "gpu_formats_awq_{}.json",
+    "gpu_formats_gptq_{}.json",
+    "gpu_lowbit_{}.json",
+    "gpu_smoothquant_{}.json",  # W8A8 + SmoothQuant with the per-layer search (ADR 0018) replaces older runs
 ]
 MODEL_COLORS = [BLUE, ORANGE, AQUA]
 CHART_CONFIGS = [
@@ -124,26 +134,92 @@ CHART_CONFIGS = [
     "int4-g64",
     "int4-g64+awq",
     "int4-g64+gptq",
+    "nf4-g64",
+    "nf4-g64+awq",
+    "nf4-g64+gptq",
+    "mxfp4",
+    "mxfp4+awq",
+    "mxfp4+gptq",
 ]
+
+
+def _gpu_runs() -> list[tuple[str, dict[str, dict]]]:
+    """Every GPU result point per model, merged across the sweep files."""
+    runs = []
+    for tag, label in GPU_MODELS:
+        pts: dict[str, dict] = {}
+        for pattern in GPU_FILES:
+            path = RESULTS / pattern.format(tag)
+            if path.exists():
+                pts |= {p["label"]: p for p in json.loads(path.read_text(encoding="utf-8"))["points"]}
+        if pts:
+            runs.append((label, pts))
+    return runs
+
+
+def _frontier(points: list[dict]) -> list[dict]:
+    """Points no other point beats on both bits per weight and perplexity, by bits."""
+    best: list[dict] = []
+    for p in sorted(points, key=lambda p: (p["bits_per_weight"], p["delta_pct"])):
+        if not best or p["delta_pct"] < best[-1]["delta_pct"]:
+            best.append(p)
+    return best
+
+
+NEEDS_TRAINING = ("ternary", "sparse24")  # they break any model not trained for them
+
+
+def frontier_chart(out_name: str) -> None:
+    """Perplexity increase against bits per weight: the best config at each size, per model."""
+    runs = _gpu_runs()
+    if not runs:
+        return
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for (label, pts), color in zip(runs, MODEL_COLORS, strict=False):
+        cands = [p for p in pts.values() if p["label"] != "bf16" and not p["label"].startswith(NEEDS_TRAINING)]
+        ax.scatter(
+            [p["bits_per_weight"] for p in cands],
+            [p["delta_pct"] for p in cands],
+            s=14,
+            color=color,
+            alpha=0.3,
+            linewidths=0,
+        )
+        front = _frontier(cands)
+        xs = [p["bits_per_weight"] for p in front]
+        ys = [p["delta_pct"] for p in front]
+        ax.plot(xs, ys, color=color, lw=2, marker="o", ms=6, mec=SURFACE, mew=1.5, label=label)
+        if label == runs[-1][0]:  # name the configs once, on the largest model
+            for p in front:
+                ax.annotate(
+                    p["label"],
+                    (p["bits_per_weight"], p["delta_pct"]),
+                    xytext=(6, -12),
+                    textcoords="offset points",
+                    color=INK_2,
+                    fontsize=8.5,
+                )
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}%" if v >= 1 else f"{v:g}%"))
+    ax.set_xlabel("bits per weight, all scales and metadata included")
+    ax.set_ylabel("perplexity increase over bf16 (log)")
+    ax.legend(loc="upper right")
+    ax.set_title("Best quality at each size: the Pareto frontier per model", loc="left")
+    _save(fig, out_name)
 
 
 def multi_model_chart(out_name: str) -> None:
     """Perplexity increase per config, one bar per model (grouped horizontal bars)."""
-    runs = []
-    for fname, label in GPU_MODELS:
-        path = RESULTS / fname
-        if path.exists():
-            pts = {p["label"]: p for p in json.loads(path.read_text(encoding="utf-8"))["points"]}
-            runs.append((label, pts))
+    runs = _gpu_runs()
     if not runs:
         return
     fig, ax = plt.subplots(figsize=(9, 6.2))
     bar_h = 0.8 / len(runs)
     for j, ((label, pts), color) in enumerate(zip(runs, MODEL_COLORS, strict=False)):
         ys = [i + j * bar_h for i in range(len(CHART_CONFIGS))]
-        vals = [pts[c]["delta_pct"] if c in pts else 0.0 for c in CHART_CONFIGS]
-        bars = ax.barh(ys, vals, height=bar_h * 0.9, color=color, label=label)
-        for b, v in zip(bars, vals, strict=True):
+        have = [(y, pts[c]["delta_pct"]) for y, c in zip(ys, CHART_CONFIGS, strict=True) if c in pts]
+        bars = ax.barh([y for y, _ in have], [v for _, v in have], height=bar_h * 0.9, color=color, label=label)
+        for b, (_, v) in zip(bars, have, strict=True):
             ax.text(b.get_width(), b.get_y() + b.get_height() / 2, f" {v:.1f}%", va="center", color=INK, fontsize=8.5)
     ax.set_yticks([i + bar_h * (len(runs) - 1) / 2 for i in range(len(CHART_CONFIGS))])
     ax.set_yticklabels(CHART_CONFIGS)
@@ -153,6 +229,104 @@ def multi_model_chart(out_name: str) -> None:
     ax.set_xlabel("WikiText-2 perplexity increase over bf16, % (lower is better)")
     ax.legend(loc="lower right")
     ax.set_title("Cost of each format across three models (RTX 3090, full test set)", loc="left")
+    _save(fig, out_name)
+
+
+def _keys_per_channel(spec_name: str) -> bool:
+    """``k4cv4`` -> True: a ``c`` right after the key bits means per-channel keys."""
+    return "c" in spec_name.split("v")[0]
+
+
+def kv_chart(out_name: str) -> None:
+    """Perplexity cost of a quantized KV cache against its bits, one panel per model."""
+    runs = []
+    for tag, label in GPU_MODELS:
+        path = RESULTS / f"kv_{tag}.json"
+        if path.exists():
+            runs.append((label, json.loads(path.read_text(encoding="utf-8"))["points"]))
+    if not runs:
+        return
+    fig, axes = plt.subplots(1, len(runs), figsize=(4 * len(runs), 3.8), sharey=True, squeeze=False)
+    series = [("keys per token", BLUE, False), ("keys per channel", ORANGE, True)]
+    for ax, (label, pts) in zip(axes[0], runs, strict=True):
+        quant = [p for p in pts if not p["label"].endswith("cache")]
+        for name, color, per_channel in series:
+            sel = sorted(
+                (p for p in quant if _keys_per_channel(p["label"]) == per_channel), key=lambda p: p["key_bits"]
+            )
+            ax.plot(
+                [p["key_bits"] for p in sel],
+                [max(p["delta_pct"], 0.01) for p in sel],
+                color=color,
+                lw=2,
+                marker="o",
+                ms=6,
+                mec=SURFACE,
+                mew=1.5,
+                label=name,
+            )
+            for p in sel:
+                ax.annotate(
+                    p["label"],
+                    (p["key_bits"], max(p["delta_pct"], 0.01)),
+                    xytext=(5, 4),
+                    textcoords="offset points",
+                    color=INK_2,
+                    fontsize=8,
+                )
+        ax.set_yscale("log")
+        ax.yaxis.set_major_formatter(
+            matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}%" if v >= 1 else f"{v:g}%")
+        )
+        ax.set_title(label, loc="left", fontsize=11.5)
+        ax.set_xlabel("cache bits per element")
+    axes[0][0].set_ylabel("perplexity increase over a bf16 cache")
+    axes[0][0].legend(loc="upper right")
+    fig.suptitle("KV-cache quantization: keys grouped per token or per channel", x=0.01, ha="left", fontweight="bold")
+    fig.tight_layout()
+    _save(fig, out_name)
+
+
+def _weights_short(point: dict) -> str:
+    return "bf16" if point["weights"] == "bf16" else point["weights"].split("-")[0]
+
+
+def memory_chart(out_name: str) -> None:
+    """Model plus KV cache memory at 32k tokens, stacked, with the perplexity cost on top."""
+    runs = []
+    for tag, label in GPU_MODELS:
+        path = RESULTS / f"kv_nf4_{tag}.json"
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            runs.append((label, data["context"], data["points"]))
+    if not runs:
+        return
+    fig, axes = plt.subplots(1, len(runs), figsize=(4 * len(runs), 4.2), squeeze=False)
+    for ax, (label, context, pts) in zip(axes[0], runs, strict=True):
+        names = [_weights_short(p) + "\n" + p["label"].replace(" cache", "") for p in pts]
+        model = [p["model_mib"] / 1024 for p in pts]
+        cache = [(p["total_mib"] - p["model_mib"]) / 1024 for p in pts]
+        xs = range(len(pts))
+        ax.bar(xs, model, color=BLUE, width=0.7, label="model")
+        ax.bar(xs, cache, bottom=model, color=ORANGE, width=0.7, label=f"KV cache, {context // 1024}k tokens")
+        for x, m, c, p in zip(xs, model, cache, pts, strict=True):
+            tag = "baseline" if x == 0 else f"+{p['delta_pct']:.1f}%"
+            ax.text(x, m + c, tag, ha="center", va="bottom", color=INK, fontsize=8.5)
+        ax.set_xticks(list(xs))
+        ax.set_xticklabels(names, fontsize=8)
+        ax.set_title(label, loc="left", fontsize=11.5)
+        ax.set_axisbelow(True)
+        ax.grid(axis="x", visible=False)
+        ax.set_ylim(0, max(m + c for m, c in zip(model, cache, strict=True)) * 1.15)
+    axes[0][0].set_ylabel("GiB")
+    axes[0][0].legend(loc="upper right", fontsize=8.5)
+    fig.suptitle(
+        "Weights and KV cache together: memory for one sequence, perplexity cost on top",
+        x=0.01,
+        ha="left",
+        fontweight="bold",
+    )
+    fig.tight_layout()
     _save(fig, out_name)
 
 
@@ -192,6 +366,9 @@ def kernel_chart(result_file: Path, out_name: str) -> None:
 
 def main() -> None:
     multi_model_chart("quality_gpu_models.png")
+    frontier_chart("frontier_gpu_models.png")
+    kv_chart("kv_gpu_models.png")
+    memory_chart("memory_gpu_models.png")
     if (RESULTS / "kernels_rtx3090.json").exists():
         kernel_chart(RESULTS / "kernels_rtx3090.json", "kernels_rtx3090.png")
     sqnr_chart("sqnr_formats.png")

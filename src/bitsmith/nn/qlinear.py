@@ -17,8 +17,10 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from bitsmith.nn.codecs import Int4Codec, WeightCodec, make_codec
+from bitsmith.nn.codecs import Int4Codec, Int8Codec, WeightCodec, make_codec
 from bitsmith.quant import QTensor, quantize_activations_per_token
+
+BACKENDS = ("reference", "triton", "int8")
 
 
 class QLinear(nn.Module):
@@ -86,9 +88,9 @@ class QLinear(nn.Module):
         act_bits: int | None = None,
     ) -> QLinear:
         """Wrap integer codes produced elsewhere (GPTQ) without re-quantizing them."""
-        if qt.spec.bits != 4 or qt.spec.granularity != "group":
-            raise ValueError("from_qtensor currently supports group-wise 4-bit tensors")
-        scheme = "int4-sym" if qt.spec.symmetric else "int4"
+        if qt.spec.bits not in (2, 3, 4) or qt.spec.granularity != "group":
+            raise ValueError("from_qtensor supports group-wise 4-, 3- and 2-bit tensors")
+        scheme = f"int{qt.spec.bits}" + ("-sym" if qt.spec.symmetric else "")
         codec = make_codec(scheme, int(qt.spec.group_size or 0))
         buffers = {k: v.to(linear.weight.device) for k, v in codec.from_qtensor(qt).items()}  # type: ignore[attr-defined]
         return cls(
@@ -100,6 +102,21 @@ class QLinear(nn.Module):
             input_scale=input_scale,
             act_bits=act_bits,
         )
+
+    @classmethod
+    def from_buffers(
+        cls,
+        linear: nn.Linear,
+        scheme: str,
+        group_size: int,
+        buffers: dict[str, Tensor],
+        *,
+        act_bits: int | None = None,
+    ) -> QLinear:
+        """Wrap buffers already produced by the codec of ``scheme`` (GPTQ on grid formats)."""
+        codec = make_codec(scheme, group_size)
+        moved = {k: v.to(linear.weight.device) for k, v in buffers.items()}
+        return cls(linear.in_features, linear.out_features, codec, moved, bias=linear.bias, act_bits=act_bits)
 
     # runtime --------------------------------------------------------------------------
     def packed_buffers(self) -> dict[str, Tensor]:
@@ -117,19 +134,36 @@ class QLinear(nn.Module):
         return w
 
     def supports_triton(self) -> bool:
-        return isinstance(self.codec, Int4Codec) and self.act_bits is None
+        return isinstance(self.codec, Int4Codec) and self.codec.bits == 4 and self.act_bits is None
+
+    def supports_int8(self) -> bool:
+        """INT8 weights with INT8 activations (W8A8) on ``torch._int_mm``."""
+        from bitsmith.kernels.int8_mm import int8_mm_supported
+
+        shape_ok = int8_mm_supported(self.in_features, self.out_features)
+        return isinstance(self.codec, Int8Codec) and self.act_bits == 8 and shape_ok
+
+    def supports(self, backend: str) -> bool:
+        return {"reference": True, "triton": self.supports_triton(), "int8": self.supports_int8()}.get(backend, False)
 
     def set_backend(self, backend: str) -> None:
-        """``"reference"`` (dequantize then matmul) or ``"triton"`` (fused INT4 kernel)."""
-        if backend not in ("reference", "triton"):
-            raise ValueError("backend must be 'reference' or 'triton'")
-        if backend == "triton" and not self.supports_triton():
-            raise ValueError(f"the triton backend supports int4 weights only, not {self.codec.name}")
+        """``"reference"`` (dequantize then matmul), ``"triton"`` (fused INT4 kernel) or
+        ``"int8"`` (integer W8A8 matmul)."""
+        if backend not in BACKENDS:
+            raise ValueError(f"backend must be one of {BACKENDS}")
+        if not self.supports(backend):
+            needs = {"triton": "int4 weights", "int8": "int8 weights with act_bits=8"}[backend]
+            raise ValueError(f"the {backend} backend needs {needs}, not {self.codec.name}")
         self.backend = backend
 
     def forward(self, x: Tensor) -> Tensor:
         if self.input_scale is not None:
             x = x * self.input_scale.to(x.dtype)
+        if self.backend == "int8":
+            from bitsmith.kernels.int8_mm import int8_linear
+
+            bufs = self.packed_buffers()
+            return int8_linear(x, bufs["qweight"], bufs["scale"], self.bias)
         if self.backend == "triton" and x.is_cuda:
             from bitsmith.kernels import int4_linear
 
@@ -164,7 +198,7 @@ class QLinear(nn.Module):
 
     def extra_repr(self) -> str:
         act = f", act_bits={self.act_bits}" if self.act_bits else ""
-        backend = ", backend=triton" if self.backend == "triton" else ""
+        backend = f", backend={self.backend}" if self.backend != "reference" else ""
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"scheme={self.codec.name}, bits_per_weight={self.bits_per_weight():.3f}{act}{backend}"

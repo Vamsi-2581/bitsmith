@@ -1,0 +1,5 @@
+openai-community/gpt2: 124.4M params, cuda, bfloat16, WikiText-2 test, 287,644 tokens
+| config | bits/w | weights MiB | compression | perplexity | delta % | SQNR dB | ms/fwd | pareto | decode tok/s |
+|--------|-------:|------------:|------------:|-----------:|--------:|--------:|-------:|--------|-------------:|
+| bf16   |  16.00 |       162.0 |       1.000 |      25.43 |   0.000 |     inf |  9.259 | yes    |        147.7 |
+| w8a8   |  8.016 |       81.16 |       1.996 |      25.61 |   0.713 |   40.06 |  21.98 | yes    |        49.42 |

@@ -14,6 +14,11 @@ MIN_SQNR = {
     "int8": 38,
     "int4": 17,
     "int4-sym": 14,
+    "int3": 11,
+    "int2": 4,
+    "nf4": 17,
+    "mxfp4": 16,
+    "mxint8": 38,
     "ternary": 4,
     "ternary-b3": 4,
     "sparse24": 7,
@@ -26,6 +31,11 @@ EXPECTED_BPW = {
     "int8": 8 + 16 / 256,
     "int4": 4 + (16 + 8) / 128,
     "int4-sym": 4 + 16 / 128,
+    "int3": 3 + (16 + 8) / 128,
+    "int2": 2 + (16 + 8) / 128,
+    "nf4": 4 + 16 / 128,
+    "mxfp4": 4 + 8 / 32,
+    "mxint8": 8 + 8 / 32,
     "ternary": 2 + 16 / 256,
     "ternary-b3": 8 * 52 / 256 + 16 / 256,  # 256 trits -> 52 bytes (padded to 260)
     "sparse24": 9.0,
@@ -113,14 +123,14 @@ def test_from_qtensor_uses_codes_verbatim() -> None:
 
 def test_from_qtensor_rejects_other_specs() -> None:
     qt = quantize(torch.randn(4, 8), QuantSpec(bits=8))
-    with pytest.raises(ValueError, match="group-wise 4-bit"):
+    with pytest.raises(ValueError, match="group-wise 4-, 3- and 2-bit"):
         QLinear.from_qtensor(_linear(4, 8), qt)
 
 
 def test_bad_arguments() -> None:
     with pytest.raises(ValueError, match="unknown scheme"):
-        make_codec("int3")
-    with pytest.raises(ValueError, match="even"):
+        make_codec("int5")
+    with pytest.raises(ValueError, match="multiple of 2"):
         make_codec("int4", group_size=7)
     with pytest.raises(ValueError, match="shape"):
         QLinear.from_linear(_linear(), "int8", weight=torch.zeros(3, 3))
@@ -168,7 +178,71 @@ def test_backend_switching() -> None:
     assert model(x).shape == (2, 10)
     assert set_backend(model, "reference") == 2
     q8 = QLinear.from_linear(_linear(), "int8")
-    with pytest.raises(ValueError, match="int4 weights only"):
+    with pytest.raises(ValueError, match="needs int4 weights"):
         q8.set_backend("triton")
     with pytest.raises(ValueError, match="backend must be"):
         q8.set_backend("cuda")
+
+
+def test_int3_and_int2_codec_validation() -> None:
+    from bitsmith.nn.codecs import IntCodec
+
+    assert make_codec("int3").name == "int3" and make_codec("int2").name == "int2"
+    with pytest.raises(ValueError, match="multiple of 8"):
+        make_codec("int3", group_size=12)
+    with pytest.raises(ValueError, match="asymmetric only"):
+        IntCodec(bits=3, symmetric=True)
+    with pytest.raises(ValueError, match="bits must be"):
+        IntCodec(bits=5)
+    assert not QLinear.from_linear(_linear(), "int3", 128).supports_triton()
+
+
+@pytest.mark.parametrize("bits", [3, 2])
+def test_from_qtensor_low_bit(bits: int) -> None:
+    lin = _linear()
+    spec = QuantSpec(bits=bits, symmetric=False, granularity="group", group_size=64)
+    qt = quantize(lin.weight.detach(), spec)
+    q = QLinear.from_qtensor(lin, qt)
+    assert q.codec.name == f"int{bits}"
+    torch.testing.assert_close(q.dequantized_weight(), qt.dequantize(), rtol=1e-3, atol=1e-5)
+
+
+def test_int8_backend_matches_simulated_w8a8() -> None:
+    """The integer matmul uses the same codes as the simulated W8A8 path."""
+    from bitsmith.nn import set_backend
+
+    torch.manual_seed(0)
+    lin = nn.Linear(64, 48)
+    q = QLinear.from_linear(lin, "int8", act_bits=8)
+    x = torch.randn(3, 7, 64)
+    ref = q(x)
+    assert q.supports("int8") and not q.supports("triton")
+    q.set_backend("int8")
+    assert "backend=int8" in repr(q)
+    torch.testing.assert_close(q(x), ref, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(q(x[0, :1]), ref[0, :1], rtol=1e-5, atol=1e-5)  # one row, padded inside
+
+    model = _Toy()
+    quantize_model(model, "int8", act_bits=8)
+    assert set_backend(model, "int8") == 2
+    with pytest.raises(ValueError, match="int8 weights with act_bits=8"):
+        QLinear.from_linear(_linear(), "int8").set_backend("int8")  # weight-only int8
+    with pytest.raises(ValueError, match="int8 weights with act_bits=8"):
+        QLinear.from_linear(_linear(), "int4", 32, act_bits=8).set_backend("int8")
+
+
+def test_int8_linear_validation() -> None:
+    from bitsmith.kernels.int8_mm import int8_linear, int8_mm_supported
+
+    w = torch.randint(-127, 128, (16, 32), dtype=torch.int8)
+    s = torch.ones(16, 1, dtype=torch.float16)
+    with pytest.raises(ValueError, match="int8"):
+        int8_linear(torch.randn(2, 32), w.float(), s)
+    with pytest.raises(ValueError, match="input features"):
+        int8_linear(torch.randn(2, 31), w, s)
+    with pytest.raises(ValueError, match="divisible by 8"):
+        int8_linear(torch.randn(2, 30), w[:, :30], s)
+    assert not int8_mm_supported(30, 16)
+    x = torch.randn(20, 32)
+    y = int8_linear(x, w, s, bias=torch.full((16,), 2.0))
+    assert y.shape == (20, 16) and y.dtype == x.dtype

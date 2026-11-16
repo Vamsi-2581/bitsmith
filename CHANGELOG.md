@@ -7,6 +7,43 @@ uses Semantic Versioning.
 
 ### Added
 
+- NF4 codec (`nf4`): 16 normal-quantile levels with an fp16 absmax per block. The table
+  is computed from the normal quantile function and tested against the published values.
+- OCP Microscaling codecs `mxfp4` and `mxint8`: 32-element blocks with a shared E8M0
+  scale, FP4 E2M1 or INT8 elements, following the MX v1.0 rules for the shared exponent
+  and saturation (ADR 0011).
+- AWQ works with the new formats; `bitsmith hf --configs` gains `nf4`, `nf4+awq`,
+  `mxfp4`, `mxfp4+awq` and `mxint8`, and the default sweep includes `nf4-g64` and `mxfp4`.
+- GPTQ for NF4, MXFP4 and MXINT8 (`gptq_quantize_table`, `--configs nf4+gptq mxfp4+gptq`):
+  the codecs expose a `TableCodec` interface (block scales, grid rounding, encode with
+  fixed scales), so GPTQ rounds each column onto the real grid (ADR 0012).
+- `QLinear.from_buffers` and a `quantize_model(encoded=...)` argument for ready codec
+  buffers.
+- INT3 and INT2 group codecs (`int3`, `int2`) with real packing: eight 3-bit codes per
+  three bytes, four 2-bit codes per byte (`pack_int3`, `pack_int2`), GPTQ support
+  (`--configs int3 int3+gptq int2+gptq`) and `bitsmith pack --format int3|int2` (ADR 0014).
+- KV-cache quantization (`bitsmith.kv`, ADR 0015): INT8, INT4, INT3 and INT2 keys and values
+  with per-token or per-channel groups and packed storage, a Hugging Face cache
+  (`quantized_cache`) that works with `generate`, an exact chunked perplexity evaluation,
+  and `bitsmith kv --configs k8v8 k4cv4 ...` with results on three models.
+- `bitsmith kv --weights nf4+gptq`: quantize the weights too and report total memory
+  (model plus cache at `--context` tokens) against the unquantized model.
+- `bitsmith.decode.GraphDecoder`: greedy decoding with a static cache and the one-token step
+  replayed from a CUDA graph (ADR 0016), with `scripts/bench_decode.py`.
+- Real W8A8: an `int8` backend that multiplies INT8 activations and weights with
+  `torch._int_mm` (ADR 0017), selected with `set_backend(model, "int8")`, with fused
+  Triton kernels for per-token quantization and the INT32 rescale, and
+  `scripts/bench_int8.py`.
+- GPT-2 results (`results/gpu_gpt2*.txt`).
+- GPT-2 style `Conv1D` layers are converted like `nn.Linear` (`linearize_conv1d`), in
+  `quantize_model`, `calibrate_and_quantize` and the sweeps.
+- `scripts/kv_channel_stats.py`: how uneven key and value channels are in real models.
+- `pack_int4`, `pack_int3` and `pack_int2` take `validate=False` to skip the range check,
+  which forces a GPU to host synchronization.
+- `docs/assets/frontier_gpu_models.png`: the best perplexity at each bits per weight.
+- `scripts/bench_gptq.py`: per-layer GPTQ timing for the Qwen2.5-1.5B shapes, with results
+  for an RTX 3090 in `results/gptq_speed_rtx3090.*`.
+- Technical guide sections on NF4, MX and GPTQ on grid formats; tests with known values.
 - Apache 2.0 license, Code of Conduct, security policy, citation file and roadmap.
 - Contributor guide with a first-contribution walkthrough and label reference.
 - Issue templates for new formats and benchmark results, a contact link to Discussions,
@@ -14,6 +51,25 @@ uses Semantic Versioning.
 - `scripts/github_bootstrap.py`, which creates the project labels, milestones and starter
   issues on GitHub.
 - Package metadata: license, author and project links.
+
+### Changed
+
+- `calibrate_and_quantize(method="smoothquant")` now picks the smoothing strength per layer
+  on calibration data, including no smoothing (ADR 0018). A fixed `alpha = 0.5` made GPT-2
+  73% worse; `alpha=` keeps the old behaviour. W8A8 + SmoothQuant results were re-measured.
+- `set_backend` asks each layer which backends it supports (`QLinear.supports`).
+- GPTQ is 3.5x to 15x faster per layer on a GPU (ADR 0013): one transposed loop with
+  two-level lazy updates shared by INT4 and grid formats, CUDA graph replay of each
+  32-column block, and a cheaper inverse Hessian factor computed in float32 on CUDA with
+  a float64 fallback. Results are unchanged beyond float rounding. New arguments:
+  `use_cuda_graph` and `inner_size` on both GPTQ functions, `dtype` on
+  `damped_inverse_cholesky`.
+- `fp8_encode` shares its nearest-even table search (`round_to_table`) with FP4.
+- `Int4Codec` is now `IntCodec` with a `bits` field (4, 3 or 2); `Int4Codec` remains as an
+  alias. INT4 group-size errors now say "multiple of 2".
+- Sweeps keep the reference weights on the CPU, which saves one model's worth of GPU
+  memory, and release cached GPU memory between configs.
+- Result files are always written with LF line endings, also on Windows.
 
 ## [0.2.0] - 2026-11-10
 

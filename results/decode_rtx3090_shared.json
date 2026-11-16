@@ -1,0 +1,98 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "torch": "2.5.1+cu121",
+  "prompt": 64,
+  "new_tokens": 128,
+  "records": [
+    {
+      "model": "HuggingFaceTB/SmolLM2-135M",
+      "weights": "bf16",
+      "backend": "cuBLAS",
+      "generate_tok_s": 34.0341106773683,
+      "graph_tok_s": 306.735811811674,
+      "graph_speedup": 9.012599586321627,
+      "prefix_equal_to_generate": 128,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "HuggingFaceTB/SmolLM2-135M",
+      "weights": "int4-g64",
+      "backend": "reference",
+      "generate_tok_s": 14.132006669753746,
+      "graph_tok_s": 41.16820858934392,
+      "graph_speedup": 2.913118395100594,
+      "prefix_equal_to_generate": 128,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "HuggingFaceTB/SmolLM2-135M",
+      "weights": "int4-g64",
+      "backend": "fused Triton",
+      "generate_tok_s": 21.28105695945201,
+      "graph_tok_s": 115.73661976378683,
+      "graph_speedup": 5.438480804045885,
+      "prefix_equal_to_generate": 128,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "Qwen/Qwen2.5-0.5B",
+      "weights": "bf16",
+      "backend": "cuBLAS",
+      "generate_tok_s": 39.201425111633306,
+      "graph_tok_s": 122.65215954957672,
+      "graph_speedup": 3.1287678751551002,
+      "prefix_equal_to_generate": 0,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "Qwen/Qwen2.5-0.5B",
+      "weights": "int4-g64",
+      "backend": "reference",
+      "generate_tok_s": 14.052517932415537,
+      "graph_tok_s": 16.827928079259998,
+      "graph_speedup": 1.1975026938369746,
+      "prefix_equal_to_generate": 128,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "Qwen/Qwen2.5-0.5B",
+      "weights": "int4-g64",
+      "backend": "fused Triton",
+      "generate_tok_s": 24.67622137583817,
+      "graph_tok_s": 107.68292417103224,
+      "graph_speedup": 4.363833608514732,
+      "prefix_equal_to_generate": 14,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "Qwen/Qwen2.5-1.5B",
+      "weights": "bf16",
+      "backend": "cuBLAS",
+      "generate_tok_s": 34.40486587372467,
+      "graph_tok_s": 64.40661295308644,
+      "graph_speedup": 1.872020463311104,
+      "prefix_equal_to_generate": 0,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "Qwen/Qwen2.5-1.5B",
+      "weights": "int4-g64",
+      "backend": "reference",
+      "generate_tok_s": 4.638777991750663,
+      "graph_tok_s": 4.963152418836896,
+      "graph_speedup": 1.0699266978637654,
+      "prefix_equal_to_generate": 8,
+      "graph_equals_eager": true
+    },
+    {
+      "model": "Qwen/Qwen2.5-1.5B",
+      "weights": "int4-g64",
+      "backend": "fused Triton",
+      "generate_tok_s": 21.497626333691116,
+      "graph_tok_s": 63.95013417932833,
+      "graph_speedup": 2.9747532674854233,
+      "prefix_equal_to_generate": 128,
+      "graph_equals_eager": true
+    }
+  ]
+}

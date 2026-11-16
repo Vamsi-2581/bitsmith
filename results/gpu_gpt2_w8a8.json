@@ -1,0 +1,47 @@
+{
+  "kind": "hf-sweep",
+  "model": "openai-community/gpt2",
+  "n_params": 124439808,
+  "eval_tokens": 287644,
+  "seconds": 36.79836915805936,
+  "torch": "2.5.1+cu121",
+  "device": "cuda",
+  "device_name": "NVIDIA GeForce RTX 3090",
+  "dtype": "bfloat16",
+  "window": 1024,
+  "stride": 512,
+  "n_calib": 128,
+  "calib_len": 512,
+  "points": [
+    {
+      "label": "bf16",
+      "scheme": "baseline",
+      "method": "rtn",
+      "bits_per_weight": 16.0,
+      "weight_mib": 162.0,
+      "compression": 1.0,
+      "perplexity": 25.42651434625374,
+      "delta_pct": 0.0,
+      "weight_sqnr_db": Infinity,
+      "ms_per_forward": 9.258864913135767,
+      "on_frontier": true,
+      "decode_tok_s": 147.6811979083958,
+      "decode_tok_s_fused": null
+    },
+    {
+      "label": "w8a8",
+      "scheme": "int8",
+      "method": "rtn",
+      "bits_per_weight": 8.015625,
+      "weight_mib": 81.158203125,
+      "compression": 1.996101364522417,
+      "perplexity": 25.60793191994404,
+      "delta_pct": 0.7134976159916651,
+      "weight_sqnr_db": 40.05728334380035,
+      "ms_per_forward": 21.983826998621225,
+      "on_frontier": true,
+      "decode_tok_s": 49.416578527928635,
+      "decode_tok_s_fused": null
+    }
+  ]
+}

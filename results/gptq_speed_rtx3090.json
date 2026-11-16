@@ -1,0 +1,55 @@
+{
+  "device": "NVIDIA GeForce RTX 3090",
+  "torch": "2.5.1+cu121",
+  "repeats": 3,
+  "records": [
+    {
+      "layer": "q_proj / o_proj",
+      "shape": [
+        1536,
+        1536
+      ],
+      "hessian_fp64_ms": 60.827824054285884,
+      "hessian_ms": 15.00724907964468,
+      "int4_eager_ms": 395.2800399856642,
+      "int4_graph_ms": 172.36721597146243,
+      "nf4_graph_ms": 208.69676594156772
+    },
+    {
+      "layer": "k_proj / v_proj",
+      "shape": [
+        256,
+        1536
+      ],
+      "hessian_fp64_ms": 96.92705399356782,
+      "hessian_ms": 25.710613932460546,
+      "int4_eager_ms": 403.0243930174038,
+      "int4_graph_ms": 195.9918689681217,
+      "nf4_graph_ms": 178.02875000052154
+    },
+    {
+      "layer": "gate_proj / up_proj",
+      "shape": [
+        8960,
+        1536
+      ],
+      "hessian_fp64_ms": 60.96269399859011,
+      "hessian_ms": 14.66661796439439,
+      "int4_eager_ms": 411.43232898321,
+      "int4_graph_ms": 194.050177000463,
+      "nf4_graph_ms": 229.2783559532836
+    },
+    {
+      "layer": "down_proj",
+      "shape": [
+        1536,
+        8960
+      ],
+      "hessian_fp64_ms": 3422.0015050377697,
+      "hessian_ms": 91.58826991915703,
+      "int4_eager_ms": 2984.981297980994,
+      "int4_graph_ms": 300.5342440446839,
+      "nf4_graph_ms": 510.340868961066
+    }
+  ]
+}

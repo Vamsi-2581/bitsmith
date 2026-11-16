@@ -12,6 +12,7 @@ from bitsmith.calib import (
     collect_activation_stats,
     damped_inverse_cholesky,
     gptq_quantize,
+    gptq_quantize_table,
     output_error,
     smooth_weight,
     smoothing_factors,
@@ -132,6 +133,29 @@ def test_damped_cholesky_is_upper_and_inverts() -> None:
     torch.testing.assert_close(u.T @ u, torch.linalg.inv(h), rtol=1e-3, atol=1e-4)
 
 
+def test_reversed_factorization_equals_textbook_cholesky_of_inverse() -> None:
+    a = torch.randn(40, 40, dtype=torch.float64)
+    h = a @ a.T + torch.eye(40, dtype=torch.float64)
+    u, _ = damped_inverse_cholesky(h, damp=0.0, dtype=torch.float64)
+    textbook = torch.linalg.cholesky(torch.linalg.inv(h), upper=True)
+    torch.testing.assert_close(u, textbook.float(), rtol=1e-5, atol=1e-6)
+
+
+def test_float32_factorization_close_and_falls_back_to_float64() -> None:
+    a = torch.randn(32, 32)
+    h = a @ a.T + torch.eye(32)
+    u64, _ = damped_inverse_cholesky(h, dtype=torch.float64)
+    u32, _ = damped_inverse_cholesky(h, dtype=torch.float32)
+    torch.testing.assert_close(u32, u64, rtol=1e-3, atol=1e-4)
+    # positive definite in float64, singular once rounded to float32
+    nearly = torch.tensor([[1.0, 1 - 1e-9], [1 - 1e-9, 1.0]], dtype=torch.float64)
+    u, _ = damped_inverse_cholesky(nearly, damp=0.0, dtype=torch.float32)
+    assert torch.isfinite(u).all()
+    torch.testing.assert_close(u.double().T @ u.double(), torch.linalg.inv(nearly), rtol=1e-3, atol=0)
+    with pytest.raises(torch.linalg.LinAlgError, match="not positive definite"):
+        damped_inverse_cholesky(torch.tensor([[1.0, 2.0], [2.0, 1.0]]), damp=0.0)
+
+
 # Capture and pipeline ------------------------------------------------------------------
 
 
@@ -241,3 +265,134 @@ def test_sequential_and_one_shot_gptq(sequential: bool) -> None:
     assert len(report.converted) == 12
     assert report.skipped == ["lm_head"]
     assert F.cosine_similarity(model(ids).flatten(), ref.flatten(), dim=0) > 0.98
+
+
+@pytest.mark.parametrize(("scheme", "min_gain"), [("nf4", 1.05), ("mxfp4", 1.02)])
+def test_awq_works_with_table_formats(scheme: str, min_gain: float) -> None:
+    # measured gain on this data: 1.44x for nf4, 1.05x for mxfp4
+    x = _correlated_inputs()
+    w = torch.randn(64, 128) * 0.02
+    res = awq_search(w, x.abs().mean(0), x[:512], scheme=scheme, group_size=64, n_grid=10)
+    assert res.loss <= res.baseline_loss
+    assert res.improvement > min_gain
+
+
+# GPTQ on grid formats (NF4, MX) ----------------------------------------------------------
+TABLE = ["nf4", "mxfp4", "mxint8"]
+
+
+@pytest.mark.parametrize("scheme", TABLE)
+def test_table_gptq_equals_rtn_without_correlation(scheme: str) -> None:
+    w = torch.randn(16, 96) * 0.02
+    codec = make_codec(scheme, 32)
+    res = gptq_quantize_table(w, torch.eye(96), codec, act_order=False)  # type: ignore[arg-type]
+    rtn = codec.encode(w)
+    for key, value in rtn.items():
+        assert torch.equal(res.buffers[key], value)
+
+
+@pytest.mark.parametrize("scheme", TABLE)
+def test_table_gptq_buffers_decode_to_its_result(scheme: str) -> None:
+    w = torch.randn(8, 100) * 0.02  # 100 is not a multiple of any block size
+    x = _correlated_inputs(512, 100)
+    codec = make_codec(scheme, 32)
+    res = gptq_quantize_table(w, 2 * x.T @ x / 512, codec)  # type: ignore[arg-type]
+    assert torch.equal(codec.decode(res.buffers, 8, 100), res.weight)
+    assert res.proxy_loss > 0
+
+
+@pytest.mark.parametrize(("scheme", "max_ratio"), [("nf4", 0.35), ("mxfp4", 0.35), ("mxint8", 0.35)])
+def test_table_gptq_beats_rtn_on_correlated_inputs(scheme: str, max_ratio: float) -> None:
+    # measured: about 4x lower expected output error for every grid format (3.8x for int4)
+    x = _correlated_inputs()
+    h = 2 * x.T @ x / x.shape[0]
+    w = torch.randn(64, 128) * 0.02
+    codec = make_codec(scheme, 64)
+    rtn = codec.decode(codec.encode(w), 64, 128)
+    gptq = gptq_quantize_table(w, h, codec)  # type: ignore[arg-type]
+    assert output_error(w, gptq.weight, h) < max_ratio * output_error(w, rtn, h)
+
+
+def test_table_gptq_handles_dead_inputs() -> None:
+    x = torch.randn(256, 64)
+    x[:, 5] = 0.0
+    w = torch.randn(4, 64)
+    res = gptq_quantize_table(w, 2 * x.T @ x / 256, make_codec("nf4", 32))  # type: ignore[arg-type]
+    assert torch.isfinite(res.weight).all()
+    assert torch.all(res.weight[:, 5] == 0)
+
+
+@pytest.mark.parametrize("scheme", ["nf4", "mxfp4"])
+def test_pipeline_gptq_on_grid_formats(scheme: str) -> None:
+    torch.manual_seed(0)
+    model = TinyLM(TinyLMConfig(vocab_size=32, dim=32, n_layers=1, n_heads=2, max_len=32)).eval()
+    ids = torch.randint(0, 32, (1, 32))
+    ref = model(ids)
+    calib = [torch.randint(0, 32, (1, 32)) for _ in range(4)]
+    report = calibrate_and_quantize(model, calib, method="gptq", scheme=scheme, group_size=32)
+    assert len(report.converted) == 6
+    layer = model.get_submodule(report.converted[0])
+    assert isinstance(layer, QLinear) and layer.codec.name == scheme
+    assert F.cosine_similarity(model(ids).flatten(), ref.flatten(), dim=0) > 0.98
+
+
+# GPTQ at 3 and 2 bits ---------------------------------------------------------------------
+@pytest.mark.parametrize("bits", [3, 2])
+def test_low_bit_gptq_beats_rtn_and_packs(bits: int) -> None:
+    x = _correlated_inputs()
+    h = 2 * x.T @ x / x.shape[0]
+    w = torch.randn(64, 128) * 0.02
+    codec = make_codec(f"int{bits}", 64)
+    rtn = codec.decode(codec.encode(w), 64, 128)
+    res = gptq_quantize(w, h, bits=bits, group_size=64, act_order=True)
+    assert int(res.qtensor.codes.max()) < 1 << bits
+    assert output_error(w, res.qtensor.dequantize(), h) < 0.5 * output_error(w, rtn, h)
+    q = QLinear.from_qtensor(nn.Linear(128, 64), res.qtensor)
+    torch.testing.assert_close(q.dequantized_weight(), res.qtensor.dequantize(), rtol=1e-3, atol=1e-6)
+
+
+def test_pipeline_gptq_int3() -> None:
+    torch.manual_seed(0)
+    model = TinyLM(TinyLMConfig(vocab_size=32, dim=32, n_layers=1, n_heads=2, max_len=32)).eval()
+    ids = torch.randint(0, 32, (1, 32))
+    ref = model(ids)
+    calib = [torch.randint(0, 32, (1, 32)) for _ in range(4)]
+    calibrate_and_quantize(model, calib, method="gptq", scheme="int3", group_size=32)
+    layer = model.get_submodule("blocks.0.q_proj")
+    assert isinstance(layer, QLinear) and layer.codec.name == "int3"
+    assert F.cosine_similarity(model(ids).flatten(), ref.flatten(), dim=0) > 0.95
+
+
+def test_smoothquant_search_picks_alpha_for_outlier_channels() -> None:
+    from bitsmith.calib import smoothquant_search
+
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(512, 64, generator=g)
+    x[:, 5] *= 40  # one channel large for every token
+    w = torch.randn(32, 64, generator=g) * 0.05
+    res = smoothquant_search(w, x.abs().amax(0), x)
+    assert res.alpha in (0.25, 0.5, 0.75) and res.scale is not None
+    assert res.loss < 0.2 * res.baseline_loss
+
+
+def test_smoothquant_search_never_worse_than_no_smoothing() -> None:
+    from bitsmith.calib import smoothquant_search
+
+    g = torch.Generator().manual_seed(1)
+    for _ in range(4):
+        x = torch.randn(256, 32, generator=g) * torch.rand(32, generator=g) * 5
+        w = torch.randn(16, 32, generator=g) * 0.05
+        res = smoothquant_search(w, x.abs().amax(0), x)
+        assert res.loss <= res.baseline_loss
+        assert (res.scale is None) == (res.alpha is None)
+    none = smoothquant_search(w, x.abs().amax(0), x, alphas=())
+    assert none.scale is None and none.loss == none.baseline_loss
+
+
+def test_pipeline_smoothquant_fixed_alpha_smooths_every_layer() -> None:
+    torch.manual_seed(0)
+    model = TinyLM(TinyLMConfig(vocab_size=32, dim=32, n_layers=1, n_heads=2, max_len=32)).eval()
+    calib = [torch.randint(0, 32, (1, 32)) for _ in range(4)]
+    calibrate_and_quantize(model, calib, method="smoothquant", scheme="int8", act_bits=8, alpha=0.5)
+    layers = [m for m in model.modules() if isinstance(m, QLinear)]
+    assert layers and all(m.input_scale is not None for m in layers)

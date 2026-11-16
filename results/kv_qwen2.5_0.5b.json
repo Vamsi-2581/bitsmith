@@ -1,0 +1,85 @@
+{
+  "kind": "kv-sweep",
+  "model": "Qwen/Qwen2.5-0.5B",
+  "n_params": 494032768,
+  "eval_tokens": 299078,
+  "seconds": 1605.3924778510118,
+  "torch": "2.5.1+cu121",
+  "device": "cuda",
+  "device_name": "NVIDIA GeForce RTX 3090",
+  "dtype": "bfloat16",
+  "window": 1024,
+  "stride": 512,
+  "points": [
+    {
+      "label": "bf16 cache",
+      "key_bits": 16.0,
+      "value_bits": 16.0,
+      "kib_per_token": 12.0,
+      "compression": 1.0,
+      "perplexity": 12.50723334662917,
+      "delta_pct": 0.0,
+      "seconds": 32.82514428999275
+    },
+    {
+      "label": "k8v8",
+      "key_bits": 8.5,
+      "value_bits": 8.5,
+      "kib_per_token": 6.375,
+      "compression": 1.8823529411764706,
+      "perplexity": 12.943668939122366,
+      "delta_pct": 3.489465498865263,
+      "seconds": 37.16947873891331
+    },
+    {
+      "label": "k4v4",
+      "key_bits": 4.5,
+      "value_bits": 4.5,
+      "kib_per_token": 3.375,
+      "compression": 3.5555555555555554,
+      "perplexity": 122.36908221840326,
+      "delta_pct": 878.3864970535872,
+      "seconds": 43.12997363193426
+    },
+    {
+      "label": "k4cv4",
+      "key_bits": 4.5,
+      "value_bits": 4.5,
+      "kib_per_token": 3.375,
+      "compression": 3.5555555555555554,
+      "perplexity": 12.649320352016904,
+      "delta_pct": 1.136038654192273,
+      "seconds": 454.0406789990375
+    },
+    {
+      "label": "k3cv3",
+      "key_bits": 3.5,
+      "value_bits": 3.5,
+      "kib_per_token": 2.625,
+      "compression": 4.571428571428571,
+      "perplexity": 13.292170037196428,
+      "delta_pct": 6.275861885784728,
+      "seconds": 539.0599260139279
+    },
+    {
+      "label": "k2v2",
+      "key_bits": 2.5,
+      "value_bits": 2.5,
+      "kib_per_token": 1.875,
+      "compression": 6.4,
+      "perplexity": 5378.753873894024,
+      "delta_pct": 42905.14530132799,
+      "seconds": 42.69586441805586
+    },
+    {
+      "label": "k2cv2",
+      "key_bits": 2.5,
+      "value_bits": 2.5,
+      "kib_per_token": 1.875,
+      "compression": 6.4,
+      "perplexity": 26.860535913671935,
+      "delta_pct": 114.7600126203061,
+      "seconds": 451.03661028295755
+    }
+  ]
+}

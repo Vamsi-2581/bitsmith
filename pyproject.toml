@@ -51,7 +51,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["bitsmith"]
-omit = ["src/bitsmith/__main__.py", "src/bitsmith/bench/hf.py", "src/bitsmith/kernels/*"]
+omit = ["src/bitsmith/__main__.py", "src/bitsmith/bench/hf.py", "src/bitsmith/kv/hf.py", "src/bitsmith/decode.py", "src/bitsmith/kernels/*"]
 
 [tool.coverage.report]
 show_missing = true
@@ -83,5 +83,5 @@ no_implicit_optional = true
 
 [[tool.mypy.overrides]]
 # Triton kernels use the Triton DSL, whose arguments are untyped by design.
-module = "bitsmith.kernels.int4_triton"
+module = ["bitsmith.kernels.int4_triton", "bitsmith.kernels.int8_mm"]
 disallow_untyped_defs = false

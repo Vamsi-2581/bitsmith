@@ -269,84 +269,61 @@ size.
 """,
         milestone="v0.3: Speed",
     ),
-    Issue(
-        "Reduce Python overhead in the GPTQ column loop",
-        ["enhancement", "performance", "area: calibration"],
-        """\
-`gptq_quantize` loops over columns in Python. On a GPU this makes GPTQ CPU bound: during
-the Qwen2.5 runs the GPU sat mostly idle while one CPU core ran at 100%.
-
-**Ideas**: process each lazy-update block with `torch.compile`, or write the inner block
-loop as a Triton kernel; the update between blocks is already a single matmul.
-
-**Files**: `src/bitsmith/calib/gptq.py`, `tests/unit/test_calib.py` (results must not change
-beyond float rounding)
-
-**Done when** GPTQ on Qwen2.5-0.5B is at least 3x faster with the same perplexity.
-""",
-        milestone="v0.3: Speed",
-    ),
     # ---------------------------------------------------------------- v0.4 formats
     Issue(
-        "Add an NF4 codec",
-        ["enhancement", "area: formats", "help wanted"],
+        "Fused Triton kernel for NF4 and MXFP4",
+        ["enhancement", "performance", "area: kernels", "help wanted"],
         """\
-NF4 (from QLoRA) stores 4-bit indices into a fixed table of 16 values placed at quantiles
-of a normal distribution, with one absmax scale per block of 64 weights.
+NF4 and MXFP4 run only on the reference path today (dequantize the whole matrix, then
+matmul), so they are much slower than INT4 with the fused kernel.
 
-**Task**: add an `nf4` scheme.
-1. Quantizer: normalize each block by its absmax, pick the nearest table entry.
-2. Codec in `src/bitsmith/nn/codecs.py`, packed with `pack_int4` (unsigned).
-3. Register in `SCHEMES` and `make_codec`; add rows to the tables in
-   `tests/unit/test_nn.py` so all parametrized tests cover it.
+**Task**: extend `src/bitsmith/kernels/int4_triton.py` so the GEMV unpacks nibbles and
+looks them up in a 16-entry table held in registers (NF4 levels or E2M1 values) instead
+of `(q - z) * s`. MXFP4 also needs the E8M0 scale applied as `2^(e - 127)`.
 
-**Done when** `nf4` passes the codec tests and appears in `bitsmith sqnr`, with its weight
-SQNR reported next to `int4` and `int4-sym`.
+**Files**: `src/bitsmith/kernels/int4_triton.py`, `src/bitsmith/nn/qlinear.py`
+(`supports_triton`), `tests/gpu/test_cuda.py`, `scripts/bench_kernels.py`
+
+**Done when** the GPU tests show the kernel matches the reference path for both formats,
+and `bench_kernels.py` reports them next to INT4.
 """,
         milestone="v0.4: Formats",
     ),
     Issue(
-        "Add MXFP4 and MXINT8 microscaling formats",
-        ["enhancement", "area: formats"],
+        "Fused Triton GEMV for INT3 and INT2",
+        ["enhancement", "performance", "area: kernels", "help wanted"],
         """\
-The OCP Microscaling (MX) formats share one 8-bit power-of-two scale (E8M0) per block of
-32 elements. MXFP4 elements are FP4 E2M1; MXINT8 elements are int8.
+INT3 and INT2 weights (ADR 0014) run only on the reference path. They read 25% and 50%
+fewer bytes than INT4, so a fused kernel should decode even faster.
 
-**Task**: implement both as codecs, reusing the table-based approach from
-`src/bitsmith/quant/fp8.py` for E2M1, and document the layout in the technical guide.
+**Task**: add GEMV kernels next to `src/bitsmith/kernels/int4_triton.py`. INT3 loads three
+bytes per eight codes, rebuilds the 24-bit word and shifts codes out; INT2 is four codes
+per byte.
 
-**Done when** both formats round trip with tested known values and appear in
-`bitsmith sqnr` with correct bits per weight (4.25 and 8.25).
+**Files**: `src/bitsmith/kernels/`, `src/bitsmith/nn/qlinear.py` (`supports_triton`),
+`tests/gpu/test_cuda.py`, `scripts/bench_kernels.py`
+
+**Done when** the GPU tests match the reference path and `bench_kernels.py` shows INT3 and
+INT2 next to INT4 against the bandwidth roofline.
 """,
         milestone="v0.4: Formats",
     ),
     Issue(
-        "Add INT3 and INT2 group codecs with packing",
-        ["enhancement", "area: formats"],
-        """\
-Only 4- and 8-bit integers are packed today. 3-bit and 2-bit weights (used with GPTQ in
-some low-memory setups) need their own packing: for example 8 three-bit values in 3 bytes.
+        "Fused attention that reads the packed KV cache",
+        ["enhancement", "performance", "area: kernels", "help wanted"],
+        """`bitsmith.kv` stores the KV cache as packed 2 to 8-bit codes (ADR 0015), but attention
+still reads a dequantized copy rebuilt at every decode step, so the cache saves memory
+without saving time.
 
-**Task**: add `pack_int3`/`unpack_int3` and `pack_int2`/`unpack_int2` in
-`src/bitsmith/packing/`, codecs `int3` and `int2`, and make `gptq_quantize` usable with them.
+**Task**: a Triton decode attention kernel (one query token) that loads the packed keys
+and values with their fp16 scales and minimums, dequantizes in registers and computes
+softmax(q k^T) v, with per-channel keys and per-token values as in `KVStream`. The
+full-precision residual can go through a second, plain pass.
 
-**Done when** known-layout and round trip tests pass and `bitsmith sqnr` shows both.
-""",
-        milestone="v0.4: Formats",
-    ),
-    Issue(
-        "KV-cache quantization",
-        ["enhancement", "area: formats", "help wanted"],
-        """\
-For long contexts the KV cache can be larger than the weights. Storing keys and values in
-INT8 or FP8 roughly halves that memory.
+**Files**: `src/bitsmith/kv/`, `src/bitsmith/kernels/`, `tests/gpu/test_cuda.py`
 
-**Task**: design and implement KV-cache quantization for Hugging Face models (for example a
-custom `Cache` class that stores quantized keys and values per head with per-token
-scales), and measure perplexity and memory at 4k and 16k context.
-
-**Done when** there is a short design note (ADR), an implementation with tests, and
-results for one model.
+**Done when** the kernel matches the reference cache path in a GPU test and a benchmark
+shows decode attention time against the bf16 cache at 4k and 16k tokens.
 """,
         milestone="v0.4: Formats",
     ),

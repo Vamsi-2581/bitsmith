@@ -26,7 +26,7 @@ def test_info(capsys: pytest.CaptureFixture[str]) -> None:
     assert "int4" in out and "rtx3050-laptop" in out
 
 
-@pytest.mark.parametrize("fmt", ["int4", "ternary", "ternary-b3", "sparse24"])
+@pytest.mark.parametrize("fmt", ["int4", "int3", "int2", "ternary", "ternary-b3", "sparse24"])
 def test_pack(fmt: str, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["pack", "--format", fmt, "--seed", "3"]) == 0
     assert "round trip" in capsys.readouterr().out
@@ -35,7 +35,8 @@ def test_pack(fmt: str, capsys: pytest.CaptureFixture[str]) -> None:
 def test_sqnr(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["sqnr", "--shape", "64x256", "--outliers", "2", "--group-size", "64"]) == 0
     out = capsys.readouterr().out
-    assert out.count("\n|") >= 9  # header, separator and 8 schemes
+    assert out.count("\n|") >= 12  # header, separator and 11 schemes
+    assert "| nf4 " in out and "| mxfp4 " in out
 
 
 def test_sqnr_rejects_bad_shape() -> None:
@@ -81,3 +82,36 @@ def test_sweep_writes_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert labels[0] == "fp32" and "int4-g32+gptq" in labels and "ternary" in labels
     assert data["optimal_perplexity"] > 1
     assert all(p["perplexity"] > 1 for p in data["points"])
+
+
+def test_kv_command_prints_table_and_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import bitsmith.kv.hf as kvhf
+
+    seen: list[object] = []
+
+    def fake_sweep(model_id: str, specs: list, **kw: object) -> kvhf.KVSweep:
+        seen.extend(s.name for s in specs)
+        seen.append(kw["weights"])
+        pts = [
+            kvhf.KVPoint("fp32 cache", 16, 16, 9.0, 1.0, 10.0, 0.0, 1.0),
+            kvhf.KVPoint("k4cv4", 4.5, 4.5, 2.53, 3.56, 10.2, 2.0, 2.0),
+        ]
+        return kvhf.KVSweep(model_id, 1000, 512, pts)
+
+    monkeypatch.setattr(kvhf, "run_kv_sweep", fake_sweep)
+    out_file = tmp_path / "kv.json"
+    assert main(["kv", "--configs", "k4cv4", "--weights", "nf4+gptq", "--json", str(out_file)]) == 0
+    out = capsys.readouterr().out
+    assert seen[0] == "k4cv4"
+    assert getattr(seen[1], "label", None) == "nf4-g64+gptq"
+    assert "MiB at 32k" in out
+    assert "| k4cv4 " in out and "KiB/token" in out
+    data = json.loads(out_file.read_text())
+    assert data["kind"] == "kv-sweep" and data["points"][1]["compression"] == 3.56
+
+
+def test_kv_command_rejects_bad_spec() -> None:
+    with pytest.raises(ValueError, match="cache spec"):
+        main(["kv", "--configs", "k4"])
