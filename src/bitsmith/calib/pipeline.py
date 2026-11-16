@@ -22,9 +22,16 @@ from torch import Tensor, nn
 from bitsmith.calib.awq import awq_search
 from bitsmith.calib.capture import LayerStats, collect_activation_stats
 from bitsmith.calib.gptq import gptq_quantize, gptq_quantize_table
-from bitsmith.calib.smoothquant import smooth_weight, smoothing_factors
+from bitsmith.calib.smoothquant import smooth_weight, smoothing_factors, smoothquant_search
 from bitsmith.nn.codecs import TABLE_SCHEMES, TableCodec, make_codec
-from bitsmith.nn.convert import DEFAULT_EXCLUDE, ConversionReport, _excluded, linear_layers, quantize_model
+from bitsmith.nn.convert import (
+    DEFAULT_EXCLUDE,
+    ConversionReport,
+    _excluded,
+    linear_layers,
+    linearize_conv1d,
+    quantize_model,
+)
 from bitsmith.quant import QTensor
 
 Method = Literal["rtn", "awq", "gptq", "smoothquant"]
@@ -52,7 +59,7 @@ def group_by_block(names: Sequence[str]) -> list[tuple[str, list[str]]]:
     return ordered
 
 
-GPTQ_SCHEMES = ("int4", "int4-sym", *TABLE_SCHEMES)
+GPTQ_SCHEMES = ("int4", "int4-sym", "int3", "int2", *TABLE_SCHEMES)
 
 
 def calibrate_and_quantize(
@@ -64,7 +71,7 @@ def calibrate_and_quantize(
     group_size: int = 128,
     exclude: Iterable[str] = DEFAULT_EXCLUDE,
     act_bits: int | None = None,
-    alpha: float = 0.5,
+    alpha: float | None = None,
     damp: float = 0.01,
     act_order: bool = True,
     sequential: bool = True,
@@ -78,6 +85,7 @@ def calibrate_and_quantize(
         raise ValueError(f"gptq supports the {', '.join(GPTQ_SCHEMES)} schemes")
 
     calib = list(calib_inputs)
+    linearize_conv1d(model)  # GPT-2 style Conv1D layers become nn.Linear before the hooks go in
     names = [n for n in linear_layers(model) if not _excluded(n, exclude)]
     groups = group_by_block(names) if sequential else [("", names)]
     report = ConversionReport(scheme=f"{scheme}+{method}")
@@ -88,11 +96,11 @@ def calibrate_and_quantize(
             calib,
             layer_names,
             track_hessian=method == "gptq",
-            keep_samples=method == "awq",
+            keep_samples=method == "awq" or (method == "smoothquant" and alpha is None),
             stop_after=stop,
         )
         overrides, qtensors, encoded = _calibrate_layers(
-            model, stats, method, scheme, group_size, alpha=alpha, damp=damp, act_order=act_order
+            model, stats, method, scheme, group_size, alpha=alpha, damp=damp, act_order=act_order, act_bits=act_bits
         )
         report.merge(
             quantize_model(
@@ -119,9 +127,10 @@ def _calibrate_layers(
     scheme: str,
     group_size: int,
     *,
-    alpha: float,
+    alpha: float | None,
     damp: float,
     act_order: bool,
+    act_bits: int | None = None,
 ) -> tuple[dict[str, tuple[Tensor, Tensor | None]], dict[str, QTensor], dict[str, dict[str, Tensor]]]:
     overrides: dict[str, tuple[Tensor, Tensor | None]] = {}
     qtensors: dict[str, QTensor] = {}
@@ -132,9 +141,16 @@ def _calibrate_layers(
         if st.n_rows == 0:
             continue
         if method == "smoothquant":
-            s = smoothing_factors(st.act_absmax, linear.weight, alpha)
-            w, inv = smooth_weight(linear.weight, s)
-            overrides[name] = (w, inv.to(torch.float16))
+            if alpha is None:  # per-layer choice, which includes not smoothing at all
+                found = smoothquant_search(
+                    linear.weight, st.act_absmax, st.samples, scheme=scheme, group_size=group_size, act_bits=act_bits
+                )
+                s_opt = found.scale
+            else:
+                s_opt = smoothing_factors(st.act_absmax, linear.weight, alpha)
+            if s_opt is not None:
+                w, inv = smooth_weight(linear.weight, s_opt)
+                overrides[name] = (w, inv.to(torch.float16))
         elif method == "awq":
             res = awq_search(linear.weight, st.abs_mean, st.samples, scheme=scheme, group_size=group_size)
             scaled = (linear.weight.float() * res.scale).to(linear.weight.dtype)
@@ -147,6 +163,7 @@ def _calibrate_layers(
             res_g = gptq_quantize(
                 linear.weight,
                 st.hessian,
+                bits=int(scheme[3]),
                 group_size=group_size,
                 symmetric=scheme == "int4-sym",
                 damp=damp,

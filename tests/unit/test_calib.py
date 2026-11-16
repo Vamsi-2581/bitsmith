@@ -334,3 +334,65 @@ def test_pipeline_gptq_on_grid_formats(scheme: str) -> None:
     layer = model.get_submodule(report.converted[0])
     assert isinstance(layer, QLinear) and layer.codec.name == scheme
     assert F.cosine_similarity(model(ids).flatten(), ref.flatten(), dim=0) > 0.98
+
+
+# GPTQ at 3 and 2 bits ---------------------------------------------------------------------
+@pytest.mark.parametrize("bits", [3, 2])
+def test_low_bit_gptq_beats_rtn_and_packs(bits: int) -> None:
+    x = _correlated_inputs()
+    h = 2 * x.T @ x / x.shape[0]
+    w = torch.randn(64, 128) * 0.02
+    codec = make_codec(f"int{bits}", 64)
+    rtn = codec.decode(codec.encode(w), 64, 128)
+    res = gptq_quantize(w, h, bits=bits, group_size=64, act_order=True)
+    assert int(res.qtensor.codes.max()) < 1 << bits
+    assert output_error(w, res.qtensor.dequantize(), h) < 0.5 * output_error(w, rtn, h)
+    q = QLinear.from_qtensor(nn.Linear(128, 64), res.qtensor)
+    torch.testing.assert_close(q.dequantized_weight(), res.qtensor.dequantize(), rtol=1e-3, atol=1e-6)
+
+
+def test_pipeline_gptq_int3() -> None:
+    torch.manual_seed(0)
+    model = TinyLM(TinyLMConfig(vocab_size=32, dim=32, n_layers=1, n_heads=2, max_len=32)).eval()
+    ids = torch.randint(0, 32, (1, 32))
+    ref = model(ids)
+    calib = [torch.randint(0, 32, (1, 32)) for _ in range(4)]
+    calibrate_and_quantize(model, calib, method="gptq", scheme="int3", group_size=32)
+    layer = model.get_submodule("blocks.0.q_proj")
+    assert isinstance(layer, QLinear) and layer.codec.name == "int3"
+    assert F.cosine_similarity(model(ids).flatten(), ref.flatten(), dim=0) > 0.95
+
+
+def test_smoothquant_search_picks_alpha_for_outlier_channels() -> None:
+    from bitsmith.calib import smoothquant_search
+
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(512, 64, generator=g)
+    x[:, 5] *= 40  # one channel large for every token
+    w = torch.randn(32, 64, generator=g) * 0.05
+    res = smoothquant_search(w, x.abs().amax(0), x)
+    assert res.alpha in (0.25, 0.5, 0.75) and res.scale is not None
+    assert res.loss < 0.2 * res.baseline_loss
+
+
+def test_smoothquant_search_never_worse_than_no_smoothing() -> None:
+    from bitsmith.calib import smoothquant_search
+
+    g = torch.Generator().manual_seed(1)
+    for _ in range(4):
+        x = torch.randn(256, 32, generator=g) * torch.rand(32, generator=g) * 5
+        w = torch.randn(16, 32, generator=g) * 0.05
+        res = smoothquant_search(w, x.abs().amax(0), x)
+        assert res.loss <= res.baseline_loss
+        assert (res.scale is None) == (res.alpha is None)
+    none = smoothquant_search(w, x.abs().amax(0), x, alphas=())
+    assert none.scale is None and none.loss == none.baseline_loss
+
+
+def test_pipeline_smoothquant_fixed_alpha_smooths_every_layer() -> None:
+    torch.manual_seed(0)
+    model = TinyLM(TinyLMConfig(vocab_size=32, dim=32, n_layers=1, n_heads=2, max_len=32)).eval()
+    calib = [torch.randint(0, 32, (1, 32)) for _ in range(4)]
+    calibrate_and_quantize(model, calib, method="smoothquant", scheme="int8", act_bits=8, alpha=0.5)
+    layers = [m for m in model.modules() if isinstance(m, QLinear)]
+    assert layers and all(m.input_scale is not None for m in layers)

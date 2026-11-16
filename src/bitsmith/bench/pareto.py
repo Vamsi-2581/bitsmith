@@ -14,7 +14,7 @@ from torch import Tensor, nn
 from bitsmith.calib import calibrate_and_quantize
 from bitsmith.eval.metrics import sqnr_db
 from bitsmith.eval.perplexity import sliding_window_perplexity
-from bitsmith.nn import QLinear, linear_layers
+from bitsmith.nn import QLinear, linear_layers, linearize_conv1d
 from bitsmith.nn.convert import DEFAULT_EXCLUDE, _excluded
 
 BASELINE = "baseline"
@@ -128,6 +128,7 @@ def run_sweep(
     eval_tokens = eval_tokens.to(device)
     calib_inputs = [c.to(device) for c in calib_inputs]
     get_logits = logits_fn or (lambda m, ids: m(ids))
+    linearize_conv1d(model)  # GPT-2 style layers count as linear from the start
     ref_weights = _linear_weights(model, exclude)
     n_weights = sum(w.numel() for w in ref_weights.values())
     base_bytes = sum(w.numel() * w.element_size() for w in ref_weights.values())

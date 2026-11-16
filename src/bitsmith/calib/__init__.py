@@ -11,13 +11,14 @@ from bitsmith.calib.gptq import (
     output_error,
 )
 from bitsmith.calib.pipeline import METHODS, calibrate_and_quantize
-from bitsmith.calib.smoothquant import smooth_weight, smoothing_factors
+from bitsmith.calib.smoothquant import SmoothSearch, smooth_weight, smoothing_factors, smoothquant_search
 
 __all__ = [
     "METHODS",
     "AWQResult",
     "GPTQResult",
     "LayerStats",
+    "SmoothSearch",
     "TableGPTQResult",
     "awq_search",
     "calibrate_and_quantize",
@@ -28,4 +29,5 @@ __all__ = [
     "output_error",
     "smooth_weight",
     "smoothing_factors",
+    "smoothquant_search",
 ]
