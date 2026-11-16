@@ -25,10 +25,14 @@ from bitsmith.eval import ErrorReport, MarkovCorpus, TinyLMConfig, train_tiny_lm
 from bitsmith.nn import SCHEMES, make_codec
 from bitsmith.packing import (
     pack_24,
+    pack_int2,
+    pack_int3,
     pack_int4,
     pack_ternary_2bit,
     pack_ternary_base3,
     unpack_24,
+    unpack_int2,
+    unpack_int3,
     unpack_int4,
     unpack_ternary_2bit,
     unpack_ternary_base3,
@@ -68,6 +72,12 @@ def cmd_pack(args: argparse.Namespace) -> int:
         packed = pack_int4(values)
         restored = unpack_int4(packed, signed=True)
         bpw = 4.0
+    elif fmt in ("int3", "int2"):
+        bits = int(fmt[3])
+        values = torch.randint(0, 1 << bits, (8,), generator=g)
+        packed = pack_int3(values) if bits == 3 else pack_int2(values)
+        restored = unpack_int3(packed) if bits == 3 else unpack_int2(packed)
+        bpw = float(bits)
     elif fmt in ("ternary", "ternary-b3"):
         n = 8 if fmt == "ternary" else 10
         values = torch.randint(-1, 2, (n,), generator=g)
@@ -225,6 +235,9 @@ _HF_CONFIGS = {
     "int4": SweepConfig("int4-g64", "int4", group_size=64),
     "int4+awq": SweepConfig("int4-g64+awq", "int4", "awq", group_size=64),
     "int4+gptq": SweepConfig("int4-g64+gptq", "int4", "gptq", group_size=64),
+    "int3": SweepConfig("int3-g64", "int3", group_size=64),
+    "int3+gptq": SweepConfig("int3-g64+gptq", "int3", "gptq", group_size=64),
+    "int2+gptq": SweepConfig("int2-g64+gptq", "int2", "gptq", group_size=64),
     "nf4": SweepConfig("nf4-g64", "nf4", group_size=64),
     "nf4+awq": SweepConfig("nf4-g64+awq", "nf4", "awq", group_size=64),
     "nf4+gptq": SweepConfig("nf4-g64+gptq", "nf4", "gptq", group_size=64),
@@ -293,6 +306,58 @@ def cmd_hf(args: argparse.Namespace) -> int:
     return 0
 
 
+KV_DEFAULT = ["k8v8", "k4v4", "k4cv4", "k3cv3", "k2v2", "k2cv2"]
+
+
+def cmd_kv(args: argparse.Namespace) -> int:
+    from bitsmith.kv import parse_kv_spec
+    from bitsmith.kv.hf import run_kv_sweep
+
+    specs = [parse_kv_spec(n) for n in (args.configs or KV_DEFAULT)]
+    t0 = time.perf_counter()
+    res = run_kv_sweep(
+        args.model,
+        specs,
+        weights=_HF_CONFIGS[args.weights] if args.weights else None,
+        eval_tokens=args.eval_tokens or None,
+        window=args.window,
+        stride=args.stride,
+        n_calib=args.n_calib,
+        calib_len=args.calib_len,
+        context=args.context,
+        device=args.device,
+        dtype=args.dtype,
+        progress=lambda label: _log(f"  measuring {label}"),
+    )
+    ctx = f"MiB at {res.context // 1024}k"
+    headers = ["weights", "cache", "key bits", "value bits", "KiB/token", "model MiB", ctx, "perplexity", "delta %"]
+    fields = ("weights", "label", "key_bits", "value_bits", "kib_per_token", "model_mib", "total_mib")
+    rows: list[list[object]] = [[getattr(p, f) for f in (*fields, "perplexity", "delta_pct")] for p in res.points]
+    where = f"{args.device}, {args.dtype}, window {args.window}, stride {args.stride}"
+    print(f"{res.model_id}: {res.n_params / 1e6:.1f}M params, {where}, WikiText-2 test, {res.eval_tokens:,} tokens")
+    print(table(headers, rows))
+    _write_json(
+        args.json,
+        {
+            "kind": "kv-sweep",
+            "model": res.model_id,
+            "n_params": res.n_params,
+            "eval_tokens": res.eval_tokens,
+            "seconds": time.perf_counter() - t0,
+            "torch": torch.__version__,
+            "device": args.device,
+            "device_name": torch.cuda.get_device_name() if args.device.startswith("cuda") else "cpu",
+            "dtype": args.dtype,
+            "window": args.window,
+            "stride": args.stride,
+            "weights": args.weights,
+            "context": res.context,
+            "points": [p.as_dict() for p in res.points],
+        },
+    )
+    return 0
+
+
 # parser -----------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bitsmith", description="LLM weight quantization from first principles.")
@@ -302,7 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("info", help="show version, schemes and hardware profiles").set_defaults(func=cmd_info)
 
     sp = sub.add_parser("pack", help="show how a storage format lays out bits")
-    sp.add_argument("--format", choices=["int4", "ternary", "ternary-b3", "sparse24"], default="int4")
+    sp.add_argument("--format", choices=["int4", "int3", "int2", "ternary", "ternary-b3", "sparse24"], default="int4")
     sp.add_argument("--seed", type=int, default=0)
     sp.set_defaults(func=cmd_pack)
 
@@ -344,6 +409,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dtype", choices=list(_DTYPE_LABEL), default="float32")
     sp.add_argument("--json", help="write results to this JSON file")
     sp.set_defaults(func=cmd_hf)
+
+    sp = sub.add_parser("kv", help="perplexity with a quantized KV cache on a Hugging Face LM (needs the hf extra)")
+    sp.add_argument("--model", default="HuggingFaceTB/SmolLM2-135M")
+    sp.add_argument(
+        "--configs", nargs="*", metavar="SPEC", help=f"k<bits>[c]v<bits>[c][-g<group>]; default: {' '.join(KV_DEFAULT)}"
+    )
+    sp.add_argument("--weights", choices=list(_HF_CONFIGS), help="also quantize the weights, e.g. nf4+gptq")
+    sp.add_argument("--eval-tokens", type=int, default=8192, help="0 = the full test split")
+    sp.add_argument("--window", type=int, default=1024)
+    sp.add_argument("--stride", type=int, default=512)
+    sp.add_argument("--n-calib", type=int, default=128, help="calibration sequences for --weights")
+    sp.add_argument("--calib-len", type=int, default=512, help="tokens per calibration sequence")
+    sp.add_argument("--context", type=int, default=32768, help="context length for the memory column")
+    sp.add_argument("--device", default="cpu", help="cpu or cuda")
+    sp.add_argument("--dtype", choices=list(_DTYPE_LABEL), default="float32")
+    sp.add_argument("--json", help="write results to this JSON file")
+    sp.set_defaults(func=cmd_kv)
     return p
 
 
