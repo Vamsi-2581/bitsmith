@@ -1,4 +1,9 @@
-"""Swap every ``nn.Linear`` in a model for a :class:`QLinear`, in place."""
+"""Swap every ``nn.Linear`` in a model for a :class:`QLinear`, in place.
+
+GPT-2 style ``Conv1D`` layers (``y = x W + b`` with ``W`` stored as ``(in, out)``) are first
+replaced by the equivalent ``nn.Linear`` (weight ``W^T``), so every later step, from
+calibration hooks to GPTQ, only ever sees ``nn.Linear``.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,7 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 
+import torch
 from torch import Tensor, nn
 
 from bitsmith.nn.qlinear import QLinear
@@ -51,6 +57,28 @@ def _excluded(name: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch(name, p) or leaf == p for p in patterns)
 
 
+def _is_conv1d(module: nn.Module) -> bool:
+    """A ``transformers`` ``Conv1D`` (matched by name and shape, so transformers is not needed)."""
+    w = getattr(module, "weight", None)
+    return type(module).__name__ == "Conv1D" and isinstance(w, Tensor) and w.dim() == 2 and hasattr(module, "nf")
+
+
+@torch.no_grad()
+def linearize_conv1d(model: nn.Module) -> list[str]:
+    """Replace every GPT-2 style ``Conv1D`` with an equal ``nn.Linear``; returns their names."""
+    names = [n for n, m in model.named_modules() if n and _is_conv1d(m)]
+    for name in names:
+        conv = model.get_submodule(name)
+        w: Tensor = conv.weight  # type: ignore[assignment]  # (in, out)
+        bias: Tensor | None = getattr(conv, "bias", None)
+        linear = nn.Linear(w.shape[0], w.shape[1], bias=bias is not None, device=w.device, dtype=w.dtype)
+        linear.weight.copy_(w.t())
+        if bias is not None:
+            linear.bias.copy_(bias)
+        _set_submodule(model, name, linear)
+    return names
+
+
 def linear_layers(model: nn.Module) -> dict[str, nn.Linear]:
     return {n: m for n, m in model.named_modules() if isinstance(m, nn.Linear)}
 
@@ -74,6 +102,7 @@ def quantize_model(
     codec buffers (GPTQ for NF4 and MX). If ``include`` is given,
     only those layers are considered (used for block by block calibration).
     """
+    linearize_conv1d(model)
     exclude = tuple(exclude)
     overrides = overrides or {}
     qtensors = qtensors or {}
@@ -107,7 +136,7 @@ def set_backend(model: nn.Module, backend: str) -> int:
     """Switch every compatible ``QLinear`` in ``model`` to ``backend``; returns how many changed."""
     count = 0
     for module in model.modules():
-        if isinstance(module, QLinear) and (backend == "reference" or module.supports_triton()):
+        if isinstance(module, QLinear) and module.supports(backend):
             module.set_backend(backend)
             count += 1
     return count
