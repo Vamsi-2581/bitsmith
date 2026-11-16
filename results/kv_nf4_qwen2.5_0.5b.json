@@ -1,0 +1,82 @@
+{
+  "kind": "kv-sweep",
+  "model": "Qwen/Qwen2.5-0.5B",
+  "n_params": 494032768,
+  "eval_tokens": 299078,
+  "seconds": 2079.5655673050787,
+  "torch": "2.5.1+cu121",
+  "device": "cuda",
+  "device_name": "NVIDIA GeForce RTX 3090",
+  "dtype": "bfloat16",
+  "window": 1024,
+  "stride": 512,
+  "weights": "nf4+gptq",
+  "context": 32768,
+  "points": [
+    {
+      "label": "bf16 cache",
+      "key_bits": 16.0,
+      "value_bits": 16.0,
+      "kib_per_token": 12.0,
+      "compression": 1.0,
+      "perplexity": 12.50723334662917,
+      "delta_pct": 0.0,
+      "seconds": 58.2482299071271,
+      "weights": "bf16",
+      "model_mib": 942.2928466796875,
+      "total_mib": 1326.2928466796875
+    },
+    {
+      "label": "bf16 cache",
+      "key_bits": 16.0,
+      "value_bits": 16.0,
+      "kib_per_token": 12.0,
+      "compression": 1.0,
+      "perplexity": 13.043146162112771,
+      "delta_pct": 4.284823035048246,
+      "seconds": 72.87035552505404,
+      "weights": "nf4-g64+gptq",
+      "model_mib": 441.0819091796875,
+      "total_mib": 825.0819091796875
+    },
+    {
+      "label": "k8v8",
+      "key_bits": 8.5,
+      "value_bits": 8.5,
+      "kib_per_token": 6.375,
+      "compression": 1.8823529411764706,
+      "perplexity": 13.521494941163361,
+      "delta_pct": 8.109400108118603,
+      "seconds": 74.71567211207002,
+      "weights": "nf4-g64+gptq",
+      "model_mib": 441.0819091796875,
+      "total_mib": 645.0819091796875
+    },
+    {
+      "label": "k4cv4",
+      "key_bits": 4.5,
+      "value_bits": 4.5,
+      "kib_per_token": 3.375,
+      "compression": 3.5555555555555554,
+      "perplexity": 13.211835673621376,
+      "delta_pct": 5.633558657335702,
+      "seconds": 801.4945899369195,
+      "weights": "nf4-g64+gptq",
+      "model_mib": 441.0819091796875,
+      "total_mib": 549.0819091796875
+    },
+    {
+      "label": "k3cv3",
+      "key_bits": 3.5,
+      "value_bits": 3.5,
+      "kib_per_token": 2.625,
+      "compression": 4.571428571428571,
+      "perplexity": 13.972899801160924,
+      "delta_pct": 11.718550489239643,
+      "seconds": 855.2180193259846,
+      "weights": "nf4-g64+gptq",
+      "model_mib": 441.0819091796875,
+      "total_mib": 525.0819091796875
+    }
+  ]
+}

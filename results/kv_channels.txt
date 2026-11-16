@@ -1,0 +1,9 @@
+Largest channel / median channel, mean |x| over 1024 WikiText-2 tokens, per layer and KV head
+| model                      | tensor | heads | median ratio |   min |   max |
+|----------------------------|--------|------:|-------------:|------:|------:|
+| HuggingFaceTB/SmolLM2-135M | keys   |    90 |        9.837 | 3.465 | 15.60 |
+| HuggingFaceTB/SmolLM2-135M | values |    90 |        2.530 | 1.240 | 16.29 |
+| Qwen/Qwen2.5-0.5B          | keys   |    48 |        6.113 | 2.422 | 137.6 |
+| Qwen/Qwen2.5-0.5B          | values |    48 |        2.678 | 1.192 | 13.37 |
+| Qwen/Qwen2.5-1.5B          | keys   |    56 |        9.606 | 4.103 | 270.6 |
+| Qwen/Qwen2.5-1.5B          | values |    56 |        3.791 | 1.515 | 12.87 |

@@ -5,7 +5,7 @@
 ![python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776ab)
 ![pytorch](https://img.shields.io/badge/pytorch-2.2%2B-ee4c2c)
 [![CI](https://github.com/yashwanthdevavarapu/bitsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/yashwanthdevavarapu/bitsmith/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-209%20CPU%20%2B%2085%20GPU-1baf7a)
+![tests](https://img.shields.io/badge/tests-345%20CPU%20%2B%20107%20GPU-1baf7a)
 ![coverage](https://img.shields.io/badge/coverage-97%25-1baf7a)
 ![types](https://img.shields.io/badge/mypy-clean-2a78d6)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -14,16 +14,22 @@
 bitsmith implements the core of modern LLM compression in readable Python, runs it on
 real models, and reports what each technique actually costs:
 
-- **Formats**: INT8, group-wise INT4, OCP FP8 (E4M3 and E5M2, bit exact), BitNet style
-  ternary, and 2:4 structured sparsity
-- **Storage**: real sub-byte packing into `uint8` (INT4 nibbles, 2-bit and base-3 ternary,
-  2:4 values plus index metadata), so checkpoints actually shrink on disk
-- **Calibration**: SmoothQuant, AWQ and GPTQ (block-sequential, with activation ordering)
-- **Kernels**: a fused INT4 dequantize + matmul in Triton, up to 1.33x faster than fp16 cuBLAS at batch 1
+- **Formats**: INT8, group-wise INT4, INT3 and INT2, NF4, OCP FP8 (E4M3 and E5M2, bit exact), OCP
+  microscaling (MXFP4, MXINT8), BitNet style ternary, and 2:4 structured sparsity
+- **Storage**: real sub-byte packing into `uint8` (INT4 nibbles, INT3 in 24-bit words, INT2,
+  2-bit and base-3 ternary, 2:4 values plus index metadata), so checkpoints actually shrink
+  on disk
+- **KV cache**: INT8 to INT2 keys and values with per-channel or per-token groups, as a
+  drop-in `transformers` cache
+- **Calibration**: SmoothQuant, AWQ and GPTQ (block-sequential, with activation ordering),
+  with GPTQ working on INT4, INT3, INT2, NF4 and MX alike
+- **Kernels and runtime**: a fused INT4 dequantize + matmul in Triton (up to 1.33x faster than
+  fp16 cuBLAS at batch 1), real INT8 W8A8 on tensor cores, and CUDA graph decoding (1.9x to
+  9x faster than `generate`)
 - **Evaluation**: full WikiText-2 perplexity on three models, kernel timing against the
   bandwidth roofline, and a Pareto sweep
-- **Engineering**: 209 CPU tests at 97% coverage plus 85 GPU tests, CI on Linux, Windows and
-  macOS, and 10 architecture decision records
+- **Engineering**: 345 CPU tests at 97% coverage plus 107 GPU tests, CI on Linux, Windows and
+  macOS, and 18 architecture decision records
 
 The core library depends only on `torch` and `numpy`.
 
@@ -63,36 +69,157 @@ and metadata byte. Cells show the perplexity increase over bf16 (lower is better
 | Config | Bits/weight | SmolLM2-135M | Qwen2.5-0.5B | Qwen2.5-1.5B |
 |--------|------------:|-------------:|-------------:|-------------:|
 | bf16 baseline (perplexity) | 16 | 14.82 | 12.51 | 8.84 |
-| int8 | 8.02 | +0.3% | +0.2% | +0.1% |
+| **8 bits** | | | | |
+| int8 | 8.02 | +0.3% | +0.2% | **+0.1%** |
+| mxint8 (OCP MX) | 8.25 | **+0.2%** | **+0.1%** | **+0.1%** |
 | fp8-e4m3 | 8.05 | +1.4% | +0.7% | +0.3% |
 | w8a8 (int8 weights and activations) | 8.02 | +2.2% | +1.8% | +2.0% |
-| w8a8 + SmoothQuant | 8.05 | **+0.8%** | **+1.0%** | **+1.1%** |
+| w8a8 + SmoothQuant | 8.03 | +0.9% | +0.8% | +0.9% |
+| **4 bits** | | | | |
 | int4, round to nearest | 4.38 | +28.9% | +14.0% | +8.2% |
 | int4 + AWQ | 4.40 | +13.0% | +9.7% | +5.1% |
-| int4 + GPTQ | 4.38 | **+12.7%** | **+4.9%** | **+3.3%** |
+| int4 + GPTQ | 4.38 | +12.7% | +4.9% | +3.3% |
+| nf4, round to nearest | 4.25 | +24.8% | +10.9% | +6.9% |
+| nf4 + AWQ | 4.27 | +11.8% | +8.6% | +5.3% |
+| nf4 + GPTQ | 4.25 | **+10.6%** | **+4.3%** | **+3.0%** |
+| mxfp4 (OCP MX), round to nearest | 4.25 | +60.7% | +22.7% | +12.6% |
+| mxfp4 + AWQ | 4.27 | +33.8% | +22.4% | +11.5% |
+| mxfp4 + GPTQ | 4.25 | +16.7% | +9.0% | +5.4% |
+| **3 and 2 bits** | | | | |
+| int3, round to nearest | 3.38 | +322% | +132% | +76% |
+| int3 + GPTQ | 3.38 | **+73%** | **+28%** | **+19%** |
+| int2 + GPTQ | 2.38 | +5,814% | +2,085% | +568% |
+| **Needs training** | | | | |
 | 2:4 sparse, no fine tuning | 9.00 | model breaks | model breaks | model breaks |
 | ternary, post training | 2.02 | model breaks | model breaks | model breaks |
 
+The best config at each size, per model (faint dots are every other config):
+
+![Pareto frontier of bits per weight against perplexity](docs/assets/frontier_gpu_models.png)
+
 **What the numbers say**
 
-1. **8-bit weights are close to free.** INT8 costs 0.2% to 0.3% at 2x compression over
+1. **8-bit weights are close to free.** INT8 and MXINT8 cost 0.1% to 0.3% at 2x compression over
    bf16. FP8 E4M3 costs a little more, since 3 mantissa bits give coarser steps near the
    per-channel maximum than 8 uniform bits.
 2. **SmoothQuant fixes activation quantization.** Quantizing activations to INT8 as well
    (W8A8) raises the loss from about 0.2% to about 2%, because a few activation channels are
-   far larger than the rest. Moving that range into the weights roughly halves it or better.
-3. **INT4 needs calibration, and GPTQ wins.** Round to nearest costs 8% to 29% on these
-   small models. Block-sequential GPTQ with activation ordering cuts that by 2.3x to 2.9x
-   and beats AWQ on every model.
-4. **Bigger models tolerate INT4 better.** The round-to-nearest gap shrinks steadily from
-   135M to 1.5B parameters.
-5. **Ternary and 2:4 need training.** Both formats are stored and executed correctly (the
+   far larger than the rest. Moving that range into the weights cuts it by 2.3x to 2.6x.
+   bitsmith picks the smoothing strength per layer from calibration data, including not
+   smoothing at all; a fixed strength broke GPT-2 (see below and ADR 0018).
+3. **4 bits needs calibration, and GPTQ wins.** Round to nearest costs 7% to 61% on these
+   small models. Block-sequential GPTQ with activation ordering cuts that by 2.3x to 3.6x
+   and beats AWQ on every model and every 4-bit format.
+4. **NF4 is the best 4-bit grid.** Its levels follow the bell shape of the weights, so it
+   beats INT4 both with and without calibration while using fewer bits (4.25 against 4.38).
+   NF4 + GPTQ is the best 4-bit result on all three models.
+5. **MXFP4 trades quality for hardware.** Each block of 32 shares a power-of-two scale, so
+   the largest weight lands anywhere from 4 to 8 on a grid that ends at 6: blocks either
+   clip or leave levels unused. Round to nearest is 1.8x to 2.5x worse than NF4. GPTQ
+   recovers most of it; AWQ barely helps, because its scales get rounded into the same
+   power-of-two block exponent. MXINT8, on the other hand, is as good as INT8.
+6. **3 bits works only with GPTQ, 2 bits not at all.** GPTQ turns INT3 from unusable
+   (+76% to +322%) into a real option at 4.7x compression (+19% on 1.5B). At 2 bits even
+   GPTQ cannot save a model this small.
+7. **Bigger models tolerate fewer bits.** Every gap shrinks from 135M to 1.5B parameters,
+   and the frontier curves move down in the same order.
+8. **Ternary and 2:4 need training.** Both formats are stored and executed correctly (the
    tests prove the round trips are exact), but they destroy a model that was not trained
    or fine tuned for them.
 
 Raw data: [`results/gpu_*.json`](results). Full tables with timing:
 [SmolLM2-135M](results/gpu_smollm2_135m.txt), [Qwen2.5-0.5B](results/gpu_qwen2.5_0.5b.txt),
-[Qwen2.5-1.5B](results/gpu_qwen2.5_1.5b.txt).
+[Qwen2.5-1.5B](results/gpu_qwen2.5_1.5b.txt). NF4, MX, low-bit and SmoothQuant runs:
+`results/gpu_formats*`, `results/gpu_lowbit_*`, `results/gpu_smoothquant_*`.
+
+### A fourth family: GPT-2
+
+GPT-2 stores its projections as `transformers` `Conv1D` layers, which bitsmith converts to
+equivalent `nn.Linear` layers before quantizing (exact, tested), so every method runs
+unchanged. Full WikiText-2 test split, same settings
+([`results/gpu_gpt2.txt`](results/gpu_gpt2.txt)):
+
+| Config | Bits/weight | GPT-2 (124M) |
+|--------|------------:|-------------:|
+| bf16 baseline (perplexity) | 16 | 25.43 |
+| int8 | 8.02 | +0.06% |
+| w8a8 | 8.02 | +0.71% |
+| w8a8 + SmoothQuant, fixed alpha 0.5 (old default) | 8.03 | +73% |
+| w8a8 + SmoothQuant, per-layer search | 8.03 | **+0.50%** |
+| int4, round to nearest | 4.38 | +7.4% |
+| int4 + AWQ | 4.39 | +5.7% |
+| int4 + GPTQ | 4.38 | **+4.1%** |
+| nf4 + GPTQ | 4.25 | +4.4% |
+| int3 + GPTQ | 3.38 | +31% |
+
+GPT-2 is where a fixed SmoothQuant strength failed. The input of an MLP down projection
+has channels that rarely fire. Calibration sees them small, smoothing scales them up 13x,
+and when one fires on new text it takes over the token's INT8 range. Choosing per layer
+on calibration data (which may mean no smoothing) fixes it. Unlike on the other models,
+INT4 + GPTQ edges out NF4 + GPTQ here.
+
+### KV cache: keys must be grouped per channel
+
+The weights are fixed, but the cache of past keys and values grows with every token: 28 KiB
+per token for Qwen2.5-1.5B in bf16, so 0.9 GiB for one 32k-token sequence. `bitsmith kv`
+stores it at 8 to 2 bits per number and measures WikiText-2 perplexity through a real
+`transformers` cache, evaluated chunk by chunk so it matches token-by-token decoding
+exactly (ADR 0015). Weights stay in bf16; cells show the perplexity increase over a bf16
+cache.
+
+![KV cache quantization per model](docs/assets/kv_gpu_models.png)
+
+| Cache (`k` keys, `v` values, `c` per channel) | Bits/element | Cache size | SmolLM2-135M | Qwen2.5-0.5B | Qwen2.5-1.5B |
+|-----------------------------------------------|-------------:|-----------:|-------------:|-------------:|-------------:|
+| bf16 baseline (perplexity) | 16 | 1x | 14.82 | 12.51 | 8.85 |
+| `k8v8`: INT8, per token | 8.5 | 1.9x smaller | **+0.05%** | +3.5% | **+0.5%** |
+| `k4v4`: INT4, per token | 4.5 | 3.6x smaller | +8.3% | +878% | model breaks |
+| `k4cv4`: INT4, keys per channel | 4.5 | 3.6x smaller | +1.2% | **+1.1%** | +0.8% |
+| `k3cv3`: INT3, keys per channel | 3.5 | 4.6x smaller | +6.1% | +6.3% | +4.3% |
+| `k2v2`: INT2, per token | 2.5 | 6.4x smaller | model breaks | model breaks | model breaks |
+| `k2cv2`: INT2, keys per channel | 2.5 | 6.4x smaller | +93% | +115% | +67% |
+
+1. **How keys are grouped matters more than how many bits they get.** A few key channels
+   are large for every token: in a typical head the largest channel is 6x to 10x the median
+   one, up to 270x in Qwen2.5-1.5B, while values stay at 2.5x to 3.8x
+   ([`results/kv_channels.txt`](results/kv_channels.txt)). A per-token grid stretches over
+   those channels and rounds the rest away. With per-channel groups, 4-bit keys cost about
+   1% on every model, while 4-bit keys per token break both Qwen models.
+2. **On Qwen2.5-0.5B, 4 bits per channel beats 8 bits per token** (+1.1% against +3.5%) at
+   half the memory.
+3. **3 bits is usable, 2 bits is not yet.** INT3 with per-channel keys shrinks the cache
+   4.6x for 4% to 6%; INT2 still costs 67% to 115%.
+
+Full tables: [`results/kv_*.txt`](results). The cache stores packed codes, but attention
+still reads a dequantized copy, so this saves memory, not time; a fused attention kernel
+is on the [roadmap](ROADMAP.md).
+
+### Weights and KV cache together
+
+`bitsmith kv --weights nf4+gptq` quantizes the weights with GPTQ first, then runs every
+cache format on the quantized model. Memory is everything the model holds (packed weights,
+bf16 embeddings and norms) plus the cache for one sequence of 32k tokens; the perplexity
+increase is against the bf16 model with a bf16 cache.
+
+![Model and KV cache memory per configuration](docs/assets/memory_gpu_models.png)
+
+| Weights + cache | SmolLM2-135M | Qwen2.5-0.5B | Qwen2.5-1.5B |
+|-----------------|-------------:|-------------:|-------------:|
+| bf16 + bf16 (memory at 32k) | 977 MiB | 1,326 MiB | 3,840 MiB |
+| nf4 + GPTQ, bf16 cache | 828 MiB, +10.6% | 825 MiB, +4.3% | 2,005 MiB, +3.0% |
+| nf4 + GPTQ, `k8v8` cache | 490 MiB, +10.6% | 645 MiB, +8.1% | 1,585 MiB, +3.6% |
+| nf4 + GPTQ, `k4cv4` cache | **310 MiB, +12.2%** | **549 MiB, +5.6%** | **1,361 MiB, +4.0%** |
+| nf4 + GPTQ, `k3cv3` cache | 265 MiB, +19.0% | 525 MiB, +11.7% | 1,305 MiB, +7.9% |
+
+- **At long context the cache is the bigger half.** SmolLM2's bf16 cache at 32k tokens is
+  2.8x its whole model, so quantizing the weights alone saves only 15%. With a `k4cv4`
+  cache as well, memory drops 3.1x.
+- **The costs roughly add.** On Qwen2.5-1.5B, NF4 weights cost +3.0% and a `k4cv4` cache
+  about +0.8% alone; together +4.0%, for 2.8x less memory.
+- **Per-channel keys matter here too:** on Qwen2.5-0.5B an 8-bit per-token cache costs more
+  (+8.1%) than a 4-bit per-channel one (+5.6%) at twice the size.
+
+Full tables: [`results/kv_nf4_*.txt`](results).
 
 ### Speed: fused INT4 kernel on an RTX 3090
 
@@ -118,11 +245,56 @@ against 70% for cuBLAS fp16, so a hand-tuned CUDA kernel (as in Marlin) would be
 times faster still. At 512 rows (prefill) it is about 2x slower than cuBLAS. Full data:
 [`results/kernels_rtx3090.txt`](results/kernels_rtx3090.txt).
 
-End to end decoding through Hugging Face `generate` is dominated by per-layer launch
-overhead on models this small. On Qwen2.5-1.5B the fused kernel roughly doubles INT4 GPTQ
-decode speed over the reference path (12.1 to 25.4 tokens/s), but bf16 is still
-faster at 42.4 tokens/s. Capturing the decode step in a
-CUDA graph is the next step to turn the kernel win into an end to end win.
+### Speed: end to end decoding with CUDA graphs
+
+At batch 1 a decode step is a few hundred tiny kernels, and through `generate` launching
+them takes longer than running them. `GraphDecoder` (ADR 0016) captures one step as a CUDA
+graph and replays it per token. Greedy decoding, 64-token prompt, 128 new tokens
+([`results/decode_rtx3090_shared.txt`](results/decode_rtx3090_shared.txt)):
+
+| Model | Weights, kernel | `generate` tok/s | Graph tok/s | Gain |
+|-------|-----------------|-----------------:|------------:|-----:|
+| SmolLM2-135M | bf16 | 34.0 | 306.7 | 9.0x |
+| SmolLM2-135M | int4, fused | 21.3 | 115.7 | 5.4x |
+| Qwen2.5-0.5B | bf16 | 39.2 | 122.7 | 3.1x |
+| Qwen2.5-0.5B | int4, fused | 24.7 | 107.7 | 4.4x |
+| Qwen2.5-1.5B | bf16 | 34.4 | 64.4 | 1.9x |
+| Qwen2.5-1.5B | int4, fused | 21.5 | 64.0 | 3.0x |
+
+- **Launch overhead was the bottleneck.** Every configuration decodes 1.9x to 9x faster from
+  a graph. On the Qwen models INT4 on the fused kernel gains more than bf16 (3.0x to 4.4x
+  against 1.9x to 3.1x), so it now runs within 12% of bf16 instead of about 37% behind.
+- **Exact.** Graph replay produces the same tokens as running the step eagerly in all nine
+  runs. Against `generate`, which uses a dynamic cache and different attention shapes, bf16
+  rounding can flip a near tie: for Qwen2.5-0.5B the two best first tokens have exactly
+  equal bf16 logits, and in fp32 the static-cache prompt pass matches a plain forward pass
+  to 2e-5.
+- **Measured on a shared GPU.** All eight GPUs of the machine were busy with other jobs.
+  A second run gave the same picture but absolute tokens/s that differed by up to 2x, so
+  compare rows within one run, not across them.
+
+### Speed: real INT8 W8A8
+
+The `int8` backend (ADR 0017) multiplies INT8 activations by INT8 weights on tensor cores
+(`torch._int_mm`), with fused Triton kernels to quantize each token and to rescale the
+INT32 result. Single layers, CUDA graph replay, same shared GPU
+([`results/int8_rtx3090_shared.txt`](results/int8_rtx3090_shared.txt)):
+
+| Layer (out x in) | Rows | fp16 cuBLAS | W8A8 simulated | W8A8 int8 | int8 vs fp16 |
+|------------------|-----:|------------:|---------------:|----------:|-------------:|
+| Qwen2.5-1.5B attention (1536 x 1536) | 1 | 16.4 us | 108.5 us | 21.5 us | 0.76x |
+| Qwen2.5-1.5B attention (1536 x 1536) | 512 | 56.3 us | 186.4 us | 46.1 us | 1.22x |
+| Qwen2.5-1.5B MLP up (8960 x 1536) | 1 | 46.1 us | 399.4 us | 37.9 us | 1.22x |
+| Qwen2.5-1.5B MLP up (8960 x 1536) | 512 | 258.0 us | 705.0 us | 157.7 us | 1.64x |
+| 7B attention (4096 x 4096) | 1 | 59.4 us | 483.3 us | 41.0 us | 1.45x |
+| 7B attention (4096 x 4096) | 512 | 327.7 us | 959.5 us | 163.8 us | 2.00x |
+| 7B MLP up (11008 x 4096) | 128 | 266.2 us | 1,335 us | 117.8 us | 2.26x |
+
+Real W8A8 is 3x to 12x faster than the simulated path the accuracy results use, and faster
+than fp16 on 28 of 30 layer and batch shapes (1.04x to 2.26x up to 512 rows); only the
+smallest layer at 1 to 16 rows is slower. Before the two Triton kernels, the PyTorch
+quantize and rescale steps took more time than the GEMM and the backend lost to fp16 on
+every Qwen2.5-1.5B layer.
 
 ![bitsmith hf on Qwen2.5-1.5B](docs/assets/terminal_hf.png)
 
@@ -145,11 +317,12 @@ bitsmith info
 | Command | What it does |
 |---------|--------------|
 | `bitsmith info` | version, available schemes and hardware profiles |
-| `bitsmith pack --format int4\|ternary\|ternary-b3\|sparse24` | shows the exact bit layout of a format and checks the round trip |
+| `bitsmith pack --format int4\|int3\|int2\|ternary\|ternary-b3\|sparse24` | shows the exact bit layout of a format and checks the round trip |
 | `bitsmith sqnr --shape 1024x1024 --outliers 8` | weight error of every scheme on a random matrix |
 | `bitsmith sweep` | trains a tiny LM on a synthetic corpus and runs the full sweep (about 1 minute on CPU) |
 | `bitsmith roofline --params 7e9 --hardware rtx3090` | bandwidth-bound decode speed per format |
 | `bitsmith hf --model Qwen/Qwen2.5-0.5B --device cuda --dtype bfloat16 --eval-tokens 0` | WikiText-2 perplexity, size and decode speed for any causal LM |
+| `bitsmith kv --model Qwen/Qwen2.5-0.5B --device cuda --dtype bfloat16 --configs k8v8 k4cv4` | perplexity and memory with a quantized KV cache |
 
 ![bitsmith pack](docs/assets/terminal_pack.png)
 
@@ -188,6 +361,27 @@ torch.save(model.state_dict(), "model-int4.pt")    # packed buffers, not floats
 
 Other methods: `method="awq"`, and `method="smoothquant", scheme="int8", act_bits=8` for W8A8.
 
+**A quantized KV cache**
+
+```python
+from bitsmith.kv import parse_kv_spec
+from bitsmith.kv.hf import quantized_cache
+
+cache = quantized_cache(parse_kv_spec("k4cv4"))    # 4-bit keys per channel, values per token
+out = model.generate(ids, past_key_values=cache, max_new_tokens=64)
+print(cache.nbytes)                                # bytes actually stored
+```
+
+**Fast decoding**
+
+```python
+from bitsmith.decode import GraphDecoder
+
+set_backend(model, "triton")                       # or "int8" for W8A8 layers
+decoder = GraphDecoder(model, max_len=2048)        # static cache, one CUDA graph per step
+new_ids = decoder.generate(prompt_ids, new_tokens=128)
+```
+
 **Building blocks** are importable on their own: `bitsmith.quant` (quantizers, FP8),
 `bitsmith.packing` (bit layouts), `bitsmith.calib` (`gptq_quantize`, `awq_search`,
 `smoothing_factors`), `bitsmith.kernels` (`int4_linear`), `bitsmith.eval`
@@ -203,7 +397,7 @@ Other methods: `method="awq"`, and `method="smoothquant", scheme="int8", act_bit
    calib/ (block by block)               quant/ + packing/
    SmoothQuant: x/s, W*s                 uniform affine/symmetric, FP8, ternary
    AWQ: grid search s                    INT4 nibbles, 2-bit/base-3 trits, 2:4 meta
-   GPTQ: act-order OBS updates                 |
+   GPTQ: act-order OBS updates           NF4 table, MX E8M0 + FP4/INT8 blocks
           |                                    |
           +----------------> nn/codecs.py <----+
                             encode -> uint8/int8 buffers + fp16 scales
@@ -275,12 +469,15 @@ is known exactly (2.433), then sweeps every config. It runs in CI in about a min
 
 ```
 src/bitsmith/
-  quant/       uniform.py (affine, symmetric, groups), fp8.py (E4M3, E5M2), ternary.py
-  packing/     int4.py, ternary.py (2-bit and base-3), sparse24.py
+  quant/       uniform.py (affine, symmetric, groups), fp8.py (E4M3, E5M2), nf4.py,
+               mx.py (MXFP4, MXINT8), ternary.py
+  packing/     int4.py, lowbit.py (INT3, INT2), ternary.py (2-bit and base-3), sparse24.py
   nn/          codecs.py (one class per format), qlinear.py, convert.py
   calib/       capture.py (hooks), smoothquant.py, awq.py, gptq.py, pipeline.py
-  kernels/     int4_triton.py (fused GEMV and GEMM)
+  kernels/     int4_triton.py (fused GEMV and GEMM), int8_mm.py (real W8A8)
   eval/        metrics.py, perplexity.py, corpus.py (Markov), tiny_lm.py
+  kv/          quant.py (KV grids, streams), hf.py (transformers cache, exact evaluation)
+  decode.py    GraphDecoder: static cache, one CUDA graph per decode step
   bench/       pareto.py, roofline.py, hf.py (WikiText-2)
   report.py    plain text tables and scatter plots
   cli.py       the bitsmith command
@@ -289,8 +486,9 @@ tests/
   e2e/         CLI, full train-quantize-evaluate-reload pipeline, opt-in real model test
   gpu/         CUDA parity and fused kernel tests (skipped without a GPU)
 examples/      01 quickstart, 02 calibration, 03 roofline, 04 real model
-scripts/       reproduce.py, bench_kernels.py, make_figures.py
-docs/          guide/ (math, layouts, kernel), adr/ (10 decision records), assets/ (figures)
+scripts/       reproduce.py, make_figures.py, bench_kernels.py, bench_int8.py, bench_decode.py,
+               bench_gptq.py, kv_channel_stats.py
+docs/          guide/ (math, layouts, kernel), adr/ (18 decision records), assets/ (figures)
 results/       every committed number, as JSON and text
 .github/       CI, benchmark and release workflows, issue and PR templates
 ```
@@ -301,7 +499,7 @@ results/       every committed number, as JSON and text
 make check       # ruff lint + format check, mypy, pytest
 make test-fast   # skip the slow end to end tests
 make coverage    # HTML coverage report
-pytest tests/gpu # on a CUDA machine: 85 GPU tests
+pytest tests/gpu # on a CUDA machine: 107 GPU tests
 ```
 
 What the tests pin down, beyond "it runs":
@@ -344,6 +542,14 @@ Recorded in [`docs/adr/`](docs/adr/README.md):
 | [0008](docs/adr/0008-minimal-dependencies.md) | the core depends on `torch` and `numpy` only |
 | [0009](docs/adr/0009-block-sequential-calibration.md) | block-sequential calibration and act-order GPTQ with static groups (replaces 0005) |
 | [0010](docs/adr/0010-fused-int4-triton-kernel.md) | fused INT4 Triton kernel as an optional backend, and the variants that lost |
+| [0011](docs/adr/0011-lookup-and-microscaling-formats.md) | NF4 table computed from the normal quantiles; MX formats follow OCP MX v1.0 exactly, clipping included |
+| [0012](docs/adr/0012-gptq-on-grid-formats.md) | GPTQ on any block-scale grid through a small `TableCodec` interface |
+| [0013](docs/adr/0013-fast-gptq-loop.md) | GPTQ loop on transposed weights with two-level lazy updates and CUDA graph replay; float32 Hessian factor on GPUs |
+| [0014](docs/adr/0014-int3-int2-packing.md) | INT3 and INT2 are asymmetric only; INT3 packs 8 codes into a 24-bit word |
+| [0015](docs/adr/0015-kv-cache-quantization.md) | KV cache with per-channel keys and per-token values; evaluated in chunks that match token-by-token decoding exactly |
+| [0016](docs/adr/0016-cuda-graph-decoding.md) | decode with a static cache and the one-token step replayed from a CUDA graph |
+| [0017](docs/adr/0017-int8-w8a8-backend.md) | real W8A8 on `torch._int_mm`, with the same activation codes as the simulated path |
+| [0018](docs/adr/0018-smoothquant-per-layer-search.md) | SmoothQuant picks its strength per layer on calibration data, including no smoothing |
 
 ## Reproducing everything
 
@@ -360,10 +566,11 @@ numbers are deterministic for a given PyTorch version; timings depend on the mac
 ## Limitations
 
 - The fused kernel reaches about 25% of peak bandwidth; production CUDA kernels go further.
-- End to end decode speedups need CUDA graph capture of the decode step, which is not
-  wired into `generate` yet.
-- `quantize_model` converts `nn.Linear` only; GPT-2 style `Conv1D` layers are skipped.
-- Activation quantization is simulated (fake quant), as in most research code.
+- CUDA graph decoding (`GraphDecoder`) is batch 1 and greedy only, with a 16-bit cache.
+- The INT8 backend is slower than fp16 on small layers at 1 to 16 rows; activations are
+  quantized in a separate kernel rather than inside the previous layer.
+- Speed results were measured on a shared RTX 3090 under load from other jobs.
+- The quantized KV cache saves memory, not time: attention reads a dequantized copy.
 - Results cover models up to 1.5B parameters.
 - See the [roadmap](ROADMAP.md) for how each of these is being addressed.
 

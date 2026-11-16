@@ -1,0 +1,62 @@
+{
+  "kind": "hf-sweep",
+  "model": "Qwen/Qwen2.5-1.5B",
+  "n_params": 1543714304,
+  "eval_tokens": 299078,
+  "seconds": 1484.9854242369765,
+  "torch": "2.5.1+cu121",
+  "device": "cuda",
+  "device_name": "NVIDIA GeForce RTX 3090",
+  "dtype": "bfloat16",
+  "window": 1024,
+  "stride": 512,
+  "n_calib": 128,
+  "calib_len": 512,
+  "points": [
+    {
+      "label": "bf16",
+      "scheme": "baseline",
+      "method": "rtn",
+      "bits_per_weight": 16.0,
+      "weight_mib": 2499.0,
+      "compression": 1.0,
+      "perplexity": 8.844701581113787,
+      "delta_pct": 0.0,
+      "weight_sqnr_db": Infinity,
+      "ms_per_forward": 68.84078006260097,
+      "on_frontier": true,
+      "decode_tok_s": 36.45594443200782,
+      "decode_tok_s_fused": null
+    },
+    {
+      "label": "nf4-g64+gptq",
+      "scheme": "nf4",
+      "method": "gptq",
+      "bits_per_weight": 4.25,
+      "weight_mib": 663.796875,
+      "compression": 3.764705882352941,
+      "perplexity": 9.11034004360348,
+      "delta_pct": 3.003362635285689,
+      "weight_sqnr_db": 18.209508797446276,
+      "ms_per_forward": 157.09575300570577,
+      "on_frontier": true,
+      "decode_tok_s": 4.54841452053184,
+      "decode_tok_s_fused": null
+    },
+    {
+      "label": "mxfp4+gptq",
+      "scheme": "mxfp4",
+      "method": "gptq",
+      "bits_per_weight": 4.25,
+      "weight_mib": 663.796875,
+      "compression": 3.764705882352941,
+      "perplexity": 9.326591463544647,
+      "delta_pct": 5.44834529476772,
+      "weight_sqnr_db": 16.138491617972623,
+      "ms_per_forward": 360.78034597449005,
+      "on_frontier": false,
+      "decode_tok_s": 4.6611763837254445,
+      "decode_tok_s_fused": null
+    }
+  ]
+}

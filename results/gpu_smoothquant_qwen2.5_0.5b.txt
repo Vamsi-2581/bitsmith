@@ -1,0 +1,5 @@
+Qwen/Qwen2.5-0.5B: 494.0M params, cuda, bfloat16, WikiText-2 test, 299,078 tokens
+| config           | bits/w | weights MiB | compression | perplexity | delta % | SQNR dB | ms/fwd | pareto | decode tok/s |
+|------------------|-------:|------------:|------------:|-----------:|--------:|--------:|-------:|--------|-------------:|
+| bf16             |  16.00 |       682.5 |       1.000 |      12.51 |   0.000 |     inf |  65.68 | yes    |        39.49 |
+| w8a8+smoothquant |  8.024 |       342.3 |       1.994 |      12.60 |   0.773 |   35.63 |  147.1 | yes    |        13.61 |

@@ -1,0 +1,12 @@
+Greedy decode on NVIDIA GeForce RTX 3090, batch 1, 64-token prompt, 128 new tokens, median of 5
+| model        | weights  | kernel       | generate tok/s | graph tok/s | graph gain | vs bf16 graph | = generate | graph = eager |
+|--------------|----------|--------------|---------------:|------------:|------------|---------------|------------|---------------|
+| SmolLM2-135M | bf16     | cuBLAS       |          34.03 |       306.7 | 9.01x      | 1.00x         | 128/128    | yes           |
+| SmolLM2-135M | int4-g64 | reference    |          14.13 |       41.17 | 2.91x      | 0.13x         | 128/128    | yes           |
+| SmolLM2-135M | int4-g64 | fused Triton |          21.28 |       115.7 | 5.44x      | 0.38x         | 128/128    | yes           |
+| Qwen2.5-0.5B | bf16     | cuBLAS       |          39.20 |       122.7 | 3.13x      | 1.00x         | 0/128      | yes           |
+| Qwen2.5-0.5B | int4-g64 | reference    |          14.05 |       16.83 | 1.20x      | 0.14x         | 128/128    | yes           |
+| Qwen2.5-0.5B | int4-g64 | fused Triton |          24.68 |       107.7 | 4.36x      | 0.88x         | 14/128     | yes           |
+| Qwen2.5-1.5B | bf16     | cuBLAS       |          34.40 |       64.41 | 1.87x      | 1.00x         | 0/128      | yes           |
+| Qwen2.5-1.5B | int4-g64 | reference    |          4.639 |       4.963 | 1.07x      | 0.08x         | 8/128      | yes           |
+| Qwen2.5-1.5B | int4-g64 | fused Triton |          21.50 |       63.95 | 2.97x      | 0.99x         | 128/128    | yes           |

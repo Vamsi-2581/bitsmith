@@ -14,7 +14,7 @@
     "seed": 0
   },
   "optimal_perplexity": 2.432894486140732,
-  "seconds": 89.67322680000507,
+  "seconds": 79.605909599999,
   "points": [
     {
       "label": "fp32",
@@ -26,7 +26,7 @@
       "perplexity": 2.906194653281145,
       "delta_pct": 0.0,
       "weight_sqnr_db": Infinity,
-      "ms_per_forward": 6.91979999828618,
+      "ms_per_forward": 4.07459999769344,
       "on_frontier": false
     },
     {
@@ -39,7 +39,7 @@
       "perplexity": 2.9061453273197797,
       "delta_pct": -0.0016972697031714112,
       "weight_sqnr_db": 44.92793732828614,
-      "ms_per_forward": 14.151400013361126,
+      "ms_per_forward": 5.187200000364101,
       "on_frontier": false
     },
     {
@@ -52,7 +52,7 @@
       "perplexity": 2.906015053413806,
       "delta_pct": -0.006179898071734247,
       "weight_sqnr_db": 31.656305893495983,
-      "ms_per_forward": 13.462100003380328,
+      "ms_per_forward": 7.881099998485297,
       "on_frontier": false
     },
     {
@@ -65,20 +65,20 @@
       "perplexity": 2.9059872976671364,
       "delta_pct": -0.00713495270436848,
       "weight_sqnr_db": 44.92793732828614,
-      "ms_per_forward": 22.488399990834296,
+      "ms_per_forward": 15.198599998257123,
       "on_frontier": true
     },
     {
       "label": "w8a8+smoothquant",
       "scheme": "int8",
       "method": "smoothquant",
-      "bits_per_weight": 8.1875,
-      "weight_mib": 0.3837890625,
-      "compression": 3.9083969465648853,
-      "perplexity": 2.906629223562478,
-      "delta_pct": 0.014953240686832459,
-      "weight_sqnr_db": 44.751666060782426,
-      "ms_per_forward": 26.92649999517016,
+      "bits_per_weight": 8.171875,
+      "weight_mib": 0.383056640625,
+      "compression": 3.915869980879541,
+      "perplexity": 2.9065209133466063,
+      "delta_pct": 0.01122636658534848,
+      "weight_sqnr_db": 44.82574987536016,
+      "ms_per_forward": 17.63349999964703,
       "on_frontier": false
     },
     {
@@ -91,7 +91,7 @@
       "perplexity": 2.9130947991669665,
       "delta_pct": 0.23742889616946705,
       "weight_sqnr_db": 21.032958212985683,
-      "ms_per_forward": 20.317100003012456,
+      "ms_per_forward": 14.426900001126342,
       "on_frontier": false
     },
     {
@@ -104,7 +104,7 @@
       "perplexity": 2.9130265939937257,
       "delta_pct": 0.2350820068045767,
       "weight_sqnr_db": 21.004963976220992,
-      "ms_per_forward": 22.198099992237985,
+      "ms_per_forward": 8.829299997159978,
       "on_frontier": false
     },
     {
@@ -117,8 +117,34 @@
       "perplexity": 2.9107394030261404,
       "delta_pct": 0.1563814639829575,
       "weight_sqnr_db": 18.22613379924129,
-      "ms_per_forward": 20.48750000540167,
+      "ms_per_forward": 15.57669999965583,
+      "on_frontier": false
+    },
+    {
+      "label": "nf4-g128",
+      "scheme": "nf4",
+      "method": "rtn",
+      "bits_per_weight": 4.125,
+      "weight_mib": 0.193359375,
+      "compression": 7.757575757575758,
+      "perplexity": 2.906777274630866,
+      "delta_pct": 0.020047568013503714,
+      "weight_sqnr_db": 20.734776274680378,
+      "ms_per_forward": 10.856500000954838,
       "on_frontier": true
+    },
+    {
+      "label": "mxfp4",
+      "scheme": "mxfp4",
+      "method": "rtn",
+      "bits_per_weight": 4.25,
+      "weight_mib": 0.19921875,
+      "compression": 7.529411764705882,
+      "perplexity": 2.9076492465792683,
+      "delta_pct": 0.05005147526788711,
+      "weight_sqnr_db": 18.87681862089768,
+      "ms_per_forward": 13.152600000466919,
+      "on_frontier": false
     },
     {
       "label": "sparse24",
@@ -130,7 +156,7 @@
       "perplexity": 2.9873316309057,
       "delta_pct": 2.791863151112395,
       "weight_sqnr_db": 8.1347759348068,
-      "ms_per_forward": 16.57859999977518,
+      "ms_per_forward": 9.91029999931925,
       "on_frontier": false
     },
     {
@@ -143,7 +169,7 @@
       "perplexity": 3.265360820821346,
       "delta_pct": 12.358641123184789,
       "weight_sqnr_db": 6.567204634845142,
-      "ms_per_forward": 19.65649999328889,
+      "ms_per_forward": 13.42550000117626,
       "on_frontier": true
     }
   ]

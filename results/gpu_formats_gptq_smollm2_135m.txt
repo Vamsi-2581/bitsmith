@@ -1,0 +1,6 @@
+HuggingFaceTB/SmolLM2-135M: 134.5M params, cuda, bfloat16, WikiText-2 test, 304,978 tokens
+| config       | bits/w | weights MiB | compression | perplexity | delta % | SQNR dB | ms/fwd | pareto | decode tok/s |
+|--------------|-------:|------------:|------------:|-----------:|--------:|--------:|-------:|--------|-------------:|
+| bf16         |  16.00 |       202.5 |       1.000 |      14.82 |   0.000 |     inf |  59.15 | yes    |        22.89 |
+| nf4-g64+gptq |  4.250 |       53.79 |       3.765 |      16.39 |   10.57 |   18.63 |  79.79 | yes    |        12.16 |
+| mxfp4+gptq   |  4.250 |       53.79 |       3.765 |      17.30 |   16.74 |   16.54 |  119.5 |        |        8.957 |
