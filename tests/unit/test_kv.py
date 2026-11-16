@@ -30,7 +30,7 @@ def test_parse_and_name_round_trip(name: str, spec: KVSpec) -> None:
 
 @pytest.mark.parametrize("bad", ["k4", "kv4", "k5v4", "k4v4-g0", "K4V4"])
 def test_parse_rejects(bad: str) -> None:
-    with pytest.raises(ValueError, match="bits|group|spec"):
+    with pytest.raises(ValueError, match=r"bits|group|spec"):
         parse_kv_spec(bad)
 
 
